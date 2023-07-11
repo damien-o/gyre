@@ -110,6 +110,7 @@
                     },
                     {
                         "name": "requestedType",
+                        "description": " - ARTIFACT_DEPTH: Deprecated - use HINT_IMAGE with an image control type of \"depth\" instead\n - ARTIFACT_HINT_IMAGE: Controlnet or T2I input image",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -126,7 +127,9 @@
                                 "ARTIFACT_LATENT",
                                 "ARTIFACT_TENSOR",
                                 "ARTIFACT_LORA",
-                                "ARTIFACT_DEPTH"
+                                "ARTIFACT_DEPTH",
+                                "ARTIFACT_TOKEN_EMBEDDING",
+                                "ARTIFACT_HINT_IMAGE"
                             ],
                             "default": "ARTIFACT_NONE"
                         }
@@ -182,7 +185,7 @@
                     },
                     {
                         "name": "image.transform.diffusion",
-                        "description": " - SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: Deprecated - use the official value above\n - SAMPLER_DPMSOLVERPP_SDE: Deprecated - use the official value above\n - SAMPLER_DPMSOLVERPP_2M: Deprecated - use the official value above",
+                        "description": " - SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: Next three deprecated - use the official values above",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -284,6 +287,23 @@
                     },
                     {
                         "name": "image.tiling",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "name": "image.tilingX",
+                        "description": "The specific axis override tiling if both set",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "name": "image.tilingY",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -404,6 +424,15 @@
                     },
                     {
                         "name": "conditioner.conditioner.alias",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "accept",
+                        "description": "The accept header, in the same format as for http requests. Not guaranteed to be obeyed by server.",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -493,6 +522,24 @@
                         }
                     }
                 },
+                "parameters": [
+                    {
+                        "name": "taskGroup",
+                        "description": "Empty",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "GENERATE",
+                                "UPSCALE",
+                                "UTILITY",
+                                "HINTER"
+                            ],
+                            "default": "GENERATE"
+                        }
+                    }
+                ],
                 "tags": [
                     "EnginesService"
                 ]
@@ -551,6 +598,7 @@
                     },
                     {
                         "name": "requestedType",
+                        "description": " - ARTIFACT_DEPTH: Deprecated - use HINT_IMAGE with an image control type of \"depth\" instead\n - ARTIFACT_HINT_IMAGE: Controlnet or T2I input image",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -567,7 +615,9 @@
                                 "ARTIFACT_LATENT",
                                 "ARTIFACT_TENSOR",
                                 "ARTIFACT_LORA",
-                                "ARTIFACT_DEPTH"
+                                "ARTIFACT_DEPTH",
+                                "ARTIFACT_TOKEN_EMBEDDING",
+                                "ARTIFACT_HINT_IMAGE"
                             ],
                             "default": "ARTIFACT_NONE"
                         }
@@ -623,7 +673,7 @@
                     },
                     {
                         "name": "image.transform.diffusion",
-                        "description": " - SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: Deprecated - use the official value above\n - SAMPLER_DPMSOLVERPP_SDE: Deprecated - use the official value above\n - SAMPLER_DPMSOLVERPP_2M: Deprecated - use the official value above",
+                        "description": " - SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: Next three deprecated - use the official values above",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -725,6 +775,23 @@
                     },
                     {
                         "name": "image.tiling",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "name": "image.tilingX",
+                        "description": "The specific axis override tiling if both set",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "name": "image.tilingY",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -845,6 +912,15 @@
                     },
                     {
                         "name": "conditioner.conditioner.alias",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "accept",
+                        "description": "The accept header, in the same format as for http requests. Not guaranteed to be obeyed by server.",
                         "in": "query",
                         "required": false,
                         "schema": {
@@ -964,11 +1040,25 @@
                     "tensor": {
                         "$ref": "#/components/schemas/Tensor"
                     },
+                    "ref": {
+                        "$ref": "#/components/schemas/ArtifactReference"
+                    },
+                    "url": {
+                        "type": "string",
+                        "title": "A url (which must be allowed by the server)"
+                    },
+                    "safetensors": {
+                        "$ref": "#/components/schemas/Safetensors"
+                    },
+                    "cacheId": {
+                        "type": "string",
+                        "title": "An ID to load from cache (previously set with cache_info)"
+                    },
                     "lora": {
                         "$ref": "#/components/schemas/Lora"
                     },
-                    "ref": {
-                        "$ref": "#/components/schemas/ArtifactReference"
+                    "tokenEmbedding": {
+                        "$ref": "#/components/schemas/TokenEmbedding"
                     },
                     "index": {
                         "type": "integer",
@@ -1004,7 +1094,14 @@
                         "items": {
                             "$ref": "#/components/schemas/ImageAdjustment"
                         },
-                        "title": "Adjustments to this image / mask after generation"
+                        "title": "Adjustments to this image / mask after generation \n(primarily for adjusting mask prior to re-applying image in outpaint)"
+                    },
+                    "hintImageType": {
+                        "type": "string",
+                        "title": "Indicate the sort of control for image types"
+                    },
+                    "cacheControl": {
+                        "$ref": "#/components/schemas/CacheControl"
                     }
                 },
                 "description": "A tangible Artifact, such as an image, video, or text that is used for input\nor output."
@@ -1047,9 +1144,12 @@
                     "ARTIFACT_LATENT",
                     "ARTIFACT_TENSOR",
                     "ARTIFACT_LORA",
-                    "ARTIFACT_DEPTH"
+                    "ARTIFACT_DEPTH",
+                    "ARTIFACT_TOKEN_EMBEDDING",
+                    "ARTIFACT_HINT_IMAGE"
                 ],
-                "default": "ARTIFACT_NONE"
+                "default": "ARTIFACT_NONE",
+                "title": "- ARTIFACT_DEPTH: Deprecated - use HINT_IMAGE with an image control type of \"depth\" instead\n - ARTIFACT_HINT_IMAGE: Controlnet or T2I input image"
             },
             "AssetAction": {
                 "type": "string",
@@ -1145,6 +1245,34 @@
                     "AT_BUFFER"
                 ],
                 "default": "AT_PARAMETER"
+            },
+            "BackgroundRemovalMode": {
+                "type": "string",
+                "enum": [
+                    "ALPHA",
+                    "SOLID",
+                    "BLUR",
+                    "NOTHING"
+                ],
+                "default": "ALPHA",
+                "title": "- ALPHA: Apply to alpha channel\n - SOLID: Matte over a solid color\n - BLUR: Matte over a blurred version of the input\n - NOTHING: Don't do anything, just remember it for later"
+            },
+            "CacheControl": {
+                "type": "object",
+                "properties": {
+                    "cacheId": {
+                        "type": "string",
+                        "title": "The ID to store it under"
+                    },
+                    "maxAge": {
+                        "type": "integer",
+                        "format": "int64",
+                        "title": "If > 0, the number of seconds before it self-purges from cache"
+                    },
+                    "stage": {
+                        "$ref": "#/components/schemas/ArtifactStage"
+                    }
+                }
             },
             "ChannelSource": {
                 "type": "string",
@@ -1309,7 +1437,7 @@
                     "SAMPLER_DPMSOLVERPP_2M"
                 ],
                 "default": "SAMPLER_DDIM",
-                "description": "DiffusionSampler identifies which sampler to use for Diffusion, and represents\nthe internal set of supported samplers.\n\n - SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: Deprecated - use the official value above\n - SAMPLER_DPMSOLVERPP_SDE: Deprecated - use the official value above\n - SAMPLER_DPMSOLVERPP_2M: Deprecated - use the official value above"
+                "description": "DiffusionSampler identifies which sampler to use for Diffusion, and represents\nthe internal set of supported samplers.\n\n - SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: Next three deprecated - use the official values above"
             },
             "Dtype": {
                 "type": "string",
@@ -1334,6 +1462,20 @@
                     "DT_QUINT4_2"
                 ],
                 "default": "DT_INVALID"
+            },
+            "EngineHintImageType": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string"
+                    },
+                    "provider": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
             },
             "EngineInfo": {
                 "type": "object",
@@ -1370,6 +1512,15 @@
                         "items": {
                             "$ref": "#/components/schemas/ArtifactType"
                         }
+                    },
+                    "acceptedHintTypes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/EngineHintImageType"
+                        }
+                    },
+                    "task": {
+                        "type": "string"
                     }
                 },
                 "title": "Engine info struct"
@@ -1399,6 +1550,16 @@
                         }
                     }
                 }
+            },
+            "EngineTaskGroup": {
+                "type": "string",
+                "enum": [
+                    "GENERATE",
+                    "UPSCALE",
+                    "UTILITY",
+                    "HINTER"
+                ],
+                "default": "GENERATE"
             },
             "EngineTokenizer": {
                 "type": "string",
@@ -1558,6 +1719,15 @@
                 },
                 "description": "GuidanceScheduleParameters are used to define a schedule for CLIP guidance, and\nare used to define the behavior of the guidance over time. They are relative\nto the total number of steps, and are scaled to the number of steps in the\ncurrent run."
             },
+            "HintPriority": {
+                "type": "string",
+                "enum": [
+                    "HINT_BALANCED",
+                    "HINT_PRIORITISE_PROMPT",
+                    "HINT_PRIORITISE_HINT"
+                ],
+                "default": "HINT_BALANCED"
+            },
             "HiresFixParameters": {
                 "type": "object",
                 "properties": {
@@ -1596,6 +1766,84 @@
                     },
                     "depth": {
                         "$ref": "#/components/schemas/ImageAdjustment_Depth"
+                    },
+                    "cannyEdge": {
+                        "$ref": "#/components/schemas/ImageAdjustment_CannyEdge"
+                    },
+                    "edgeDetection": {
+                        "$ref": "#/components/schemas/ImageAdjustment_EdgeDetection"
+                    },
+                    "segmentation": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Segmentation"
+                    },
+                    "keypose": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Keypose"
+                    },
+                    "openpose": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Openpose"
+                    },
+                    "normal": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Normal"
+                    },
+                    "backgroundRemoval": {
+                        "$ref": "#/components/schemas/ImageAdjustment_BackgroundRemoval"
+                    },
+                    "autoscale": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Autoscale"
+                    },
+                    "palletize": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Palletize"
+                    },
+                    "quantize": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Quantize"
+                    },
+                    "shuffle": {
+                        "$ref": "#/components/schemas/ImageAdjustment_Shuffle"
+                    },
+                    "engineId": {
+                        "type": "string"
+                    }
+                }
+            },
+            "ImageAdjustment_Autoscale": {
+                "type": "object",
+                "properties": {
+                    "height": {
+                        "type": "string",
+                        "format": "uint64"
+                    },
+                    "width": {
+                        "type": "string",
+                        "format": "uint64"
+                    },
+                    "mode": {
+                        "$ref": "#/components/schemas/RescaleMode"
+                    }
+                },
+                "title": "Resize the image in a more clever way. \nIf either width or height are missing, will calculate the right value to maintain aspect ratio\nIf both are missing, will use the target size of the generation"
+            },
+            "ImageAdjustment_BackgroundRemoval": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "$ref": "#/components/schemas/BackgroundRemovalMode"
+                    },
+                    "reapply": {
+                        "type": "boolean",
+                        "title": "Don't recalculate, reapply the most recently calculated background within this adjustment list"
+                    }
+                }
+            },
+            "ImageAdjustment_CannyEdge": {
+                "type": "object",
+                "properties": {
+                    "lowThreshold": {
+                        "type": "number",
+                        "format": "float"
+                    },
+                    "highThreshold": {
+                        "type": "number",
+                        "format": "float"
                     }
                 }
             },
@@ -1649,6 +1897,9 @@
                     }
                 }
             },
+            "ImageAdjustment_EdgeDetection": {
+                "type": "object"
+            },
             "ImageAdjustment_Gaussian": {
                 "type": "object",
                 "properties": {
@@ -1662,6 +1913,9 @@
                 }
             },
             "ImageAdjustment_Invert": {
+                "type": "object"
+            },
+            "ImageAdjustment_Keypose": {
                 "type": "object"
             },
             "ImageAdjustment_Levels": {
@@ -1685,6 +1939,59 @@
                     }
                 }
             },
+            "ImageAdjustment_Normal": {
+                "type": "object",
+                "properties": {
+                    "backgroundThreshold": {
+                        "type": "number",
+                        "format": "float",
+                        "title": "0 .. 1, the higher the more background is removed. -1 == automatic"
+                    },
+                    "preblur": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Must be an odd integer if supplied. How much to blur depth map before calculating normal map: Recommended: 0",
+                        "title": "These next three only have any affect when using a depth engine (and then estimating a normal from that)"
+                    },
+                    "postblur": {
+                        "type": "integer",
+                        "format": "int64",
+                        "title": "Must be an odd integer if supplied. How much to blur normal map. Recommended: 5"
+                    },
+                    "smoothing": {
+                        "type": "number",
+                        "format": "float",
+                        "title": "Normal range 0..1. The higher the smoother. Recoomened: 0.8"
+                    }
+                }
+            },
+            "ImageAdjustment_Openpose": {
+                "type": "object"
+            },
+            "ImageAdjustment_Palletize": {
+                "type": "object",
+                "properties": {
+                    "colours": {
+                        "type": "integer",
+                        "format": "int64",
+                        "title": "Number of colours in one dimension (so total colours = colours * colours)"
+                    }
+                }
+            },
+            "ImageAdjustment_Quantize": {
+                "type": "object",
+                "properties": {
+                    "threshold": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        },
+                        "title": "0..1 linearly divided into len(threshold)+1 points, then numbers rounded to those\npoints based on thresholds"
+                    }
+                },
+                "title": "Quantize the image"
+            },
             "ImageAdjustment_Rescale": {
                 "type": "object",
                 "properties": {
@@ -1705,7 +2012,14 @@
                             "type": "string"
                         }
                     }
-                }
+                },
+                "title": "Resize the image. The mode specifies what will happen if the aspect ratio"
+            },
+            "ImageAdjustment_Segmentation": {
+                "type": "object"
+            },
+            "ImageAdjustment_Shuffle": {
+                "type": "object"
             },
             "ImageParameters": {
                 "type": "object",
@@ -1759,6 +2073,13 @@
                         "$ref": "#/components/schemas/HiresFixParameters"
                     },
                     "tiling": {
+                        "type": "boolean"
+                    },
+                    "tilingX": {
+                        "type": "boolean",
+                        "title": "The specific axis override tiling if both set"
+                    },
+                    "tilingY": {
                         "type": "boolean"
                     }
                 }
@@ -1832,6 +2153,18 @@
                 ],
                 "default": "MODEL_ARCHITECTURE_NONE"
             },
+            "NamedWeight": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "weight": {
+                        "type": "number",
+                        "format": "float"
+                    }
+                }
+            },
             "OnStatus": {
                 "type": "object",
                 "properties": {
@@ -1866,6 +2199,9 @@
                     },
                     "artifact": {
                         "$ref": "#/components/schemas/Artifact"
+                    },
+                    "echoBack": {
+                        "type": "boolean"
                     }
                 },
                 "description": "A Prompt is a special type of Artifact that is used to generate an output.\nThere can be multiple Prompts that affect the same output. Currently, the\nonly Prompts supported are:\n  - Text (singular)\n  - Init Image (singular, optional, type ARTIFACT_IMAGE, with init=true)\n  - Mask (singular, optional, Artifact type ARTIFACT_MASK)\n."
@@ -1879,6 +2215,29 @@
                     "weight": {
                         "type": "number",
                         "format": "float"
+                    },
+                    "namedWeights": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/NamedWeight"
+                        },
+                        "title": "For Lora / Lycoris, apply weights to different parts of the pipeline. Supported named: unet, text_encoder"
+                    },
+                    "tokenOverrides": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TokenOverride"
+                        },
+                        "title": "Override the token string inside a token_embedding"
+                    },
+                    "clipLayer": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "0 _or_ 1 == final, 2 = penultimate, 3 = next",
+                        "title": "Specify the clip layer to use for text prompts and t2i/style hints"
+                    },
+                    "hintPriority": {
+                        "$ref": "#/components/schemas/HintPriority"
                     }
                 },
                 "description": "A set of parameters for each individual Prompt."
@@ -1912,6 +2271,10 @@
                     },
                     "conditioner": {
                         "$ref": "#/components/schemas/ConditionerParameters"
+                    },
+                    "accept": {
+                        "type": "string",
+                        "description": "The accept header, in the same format as for http requests. Not guaranteed to be obeyed by server."
                     }
                 },
                 "description": "A Request is a set of Artifacts, which can be of any type with model or\ntransform parameters. It is sent to the server, which will respond with an\nAnswer."
@@ -2155,6 +2518,28 @@
                     }
                 },
                 "description": "Generally, a GPT BPE 16-bit token, paired with an optional string representation."
+            },
+            "TokenEmbedding": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string"
+                    },
+                    "tensor": {
+                        "$ref": "#/components/schemas/Tensor"
+                    }
+                }
+            },
+            "TokenOverride": {
+                "type": "object",
+                "properties": {
+                    "token": {
+                        "type": "string"
+                    },
+                    "originalToken": {
+                        "type": "string"
+                    }
+                }
             },
             "Tokens": {
                 "type": "object",

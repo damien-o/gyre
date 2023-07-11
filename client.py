@@ -7,7 +7,9 @@
 #   - Supports negative prompt by setting a prompt with negative weight
 #   - Supports sending key to machines on local network over HTTP (not HTTPS)
 
+import hashlib
 import io
+import json
 import logging
 import mimetypes
 import os
@@ -18,11 +20,14 @@ import sys
 import time
 import uuid
 from argparse import ArgumentParser, BooleanOptionalAction, Namespace
+from itertools import zip_longest
 from typing import Any, Dict, Generator, List, Literal, Optional, Sequence, Tuple, Union
 
 import grpc
+import machineid
 import torch
-from google.protobuf.json_format import MessageToJson
+import yaml
+from google.protobuf.json_format import MessageToDict, MessageToJson
 from PIL import Image, ImageOps
 from safetensors.torch import safe_open
 
@@ -44,7 +49,10 @@ import generation_pb2 as generation
 import generation_pb2_grpc as generation_grpc
 import tensors_pb2 as tensors
 
-from gyre.protobuf_safetensors import serialize_safetensor
+from gyre.protobuf_safetensors import (
+    serialize_safetensor,
+    serialize_safetensor_from_dict,
+)
 from gyre.protobuf_tensors import serialize_tensor
 
 logger = logging.getLogger(__name__)
@@ -73,6 +81,34 @@ NOISE_TYPES: Dict[str, int] = {
     "normal": generation.SAMPLER_NOISE_NORMAL,
     "brownian": generation.SAMPLER_NOISE_BROWNIAN,
 }
+
+
+class GrpcAsyncError(Exception):
+    def __init__(self, code, message):
+        super().__init__()
+
+        for possible in grpc.StatusCode:
+            if possible.value[0] == code:
+                self._code = possible
+                break
+        else:
+            self._code = grpc.StatusCode.UNKNOWN
+
+        self._message = message
+
+    def code(self):
+        return self._code
+
+    def message(self):
+        return self._message
+
+
+def floatlike(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def get_sampler_from_str(s: str) -> generation.DiffusionSampler:
@@ -126,7 +162,7 @@ def open_images(
 
 
 def image_to_prompt(
-    im, init: bool = False, mask: bool = False, depth: bool = False, use_alpha=False
+    im, init: bool = False, mask: bool = False, use_alpha=False
 ) -> generation.Prompt:
     if init and mask:
         raise ValueError("init and mask cannot both be True")
@@ -147,55 +183,269 @@ def image_to_prompt(
     type = generation.ARTIFACT_IMAGE
     if mask:
         type = generation.ARTIFACT_MASK
-    if depth:
-        type = generation.ARTIFACT_DEPTH
 
-    return generation.Prompt(
+    prompt = generation.Prompt(
         artifact=generation.Artifact(
             type=type, uuid=artifact_uuid, binary=buf.getvalue()
         ),
         parameters=generation.PromptParameters(init=init),
     )
 
+    # bgremove = generation.ImageAdjustment(
+    #     background_removal=generation.ImageAdjustment_BackgroundRemoval(
+    #         mode=generation.BackgroundRemovalMode.BLUR
+    #     )
+    # )
+    # prompt.artifact.adjustments.append(bgremove)
 
-def ref_to_prompt(ref_uuid, mask: bool = False, depth: bool = False):
-    type = generation.ARTIFACT_IMAGE
-    if mask:
-        type = generation.ARTIFACT_MASK
-    if depth:
-        type = generation.ARTIFACT_DEPTH
+    return prompt
 
+
+def add_converter_to_hint_image_prompt(prompt, remove_bg, converter, args):
+    if converter is None or converter is False:
+        return
+
+    if remove_bg:
+        bgremove = generation.ImageAdjustment(
+            background_removal=generation.ImageAdjustment_BackgroundRemoval(
+                mode=generation.BackgroundRemovalMode.SOLID
+            )
+        )
+        prompt.artifact.adjustments.append(bgremove)
+
+    adjustment = None
+    hint_type = prompt.artifact.hint_image_type
+
+    if "depth" in hint_type:
+        adjustment = generation.ImageAdjustment(
+            depth=generation.ImageAdjustment_Depth()
+        )
+    elif "canny" in hint_type:
+        args = {"low_threshold": 100, "high_threshold": 200, **args}
+
+        adjustment = generation.ImageAdjustment(
+            canny_edge=generation.ImageAdjustment_CannyEdge(**args)
+        )
+    elif "hed" in hint_type or "softedge" in hint_type or "lineart" in hint_type:
+        adjustment = generation.ImageAdjustment(
+            edge_detection=generation.ImageAdjustment_EdgeDetection()
+        )
+    elif "sketch" in hint_type or "scribble" in hint_type:
+        adjustment = [
+            generation.ImageAdjustment(
+                edge_detection=generation.ImageAdjustment_EdgeDetection()
+            ),
+            generation.ImageAdjustment(
+                blur=generation.ImageAdjustment_Gaussian(sigma=3)
+            ),
+            generation.ImageAdjustment(
+                quantize=generation.ImageAdjustment_Quantize(threshold=[0.15])
+            ),
+        ]
+    elif "segment" in hint_type:
+        adjustment = generation.ImageAdjustment(
+            segmentation=generation.ImageAdjustment_Segmentation()
+        )
+    elif "keypose" in hint_type:
+        adjustment = generation.ImageAdjustment(
+            keypose=generation.ImageAdjustment_Keypose()
+        )
+    elif "openpose" in hint_type:
+        adjustment = generation.ImageAdjustment(
+            openpose=generation.ImageAdjustment_Openpose()
+        )
+    elif "normal" in hint_type:
+        args = {"preblur": 0, "postblur": 0, **args}
+
+        adjustment = generation.ImageAdjustment(
+            normal=generation.ImageAdjustment_Normal(**args)
+        )
+    elif "color" in hint_type:
+        args = {"colours": 8, **args}
+
+        adjustment = generation.ImageAdjustment(
+            palletize=generation.ImageAdjustment_Palletize(**args)
+        )
+    elif "shuffle" in hint_type:
+        adjustment = [
+            generation.ImageAdjustment(
+                autoscale=generation.ImageAdjustment_Autoscale(
+                    mode=generation.RESCALE_COVER
+                )
+            ),
+            generation.ImageAdjustment(shuffle=generation.ImageAdjustment_Shuffle()),
+        ]
+    else:
+        raise ValueError(f"Gyre can't convert image to hint type {hint_type}")
+
+    if isinstance(adjustment, list):
+        prompt.artifact.adjustments.extend(adjustment)
+
+    else:
+        if isinstance(converter, str):
+            adjustment.engine_id = converter
+
+        prompt.artifact.adjustments.append(adjustment)
+
+    if remove_bg:
+        bgremove = generation.ImageAdjustment(
+            background_removal=generation.ImageAdjustment_BackgroundRemoval(
+                mode=generation.BackgroundRemovalMode.ALPHA, reapply=True
+            )
+        )
+        prompt.artifact.adjustments.append(bgremove)
+
+    return prompt
+
+
+def hint_image_to_prompt(
+    image,
+    hint_type,
+    weight=1.0,
+    priority=generation.HINT_BALANCED,
+    remove_bg=False,
+    converter=None,
+    args={},
+) -> generation.Prompt:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    buf.seek(0)
+
+    artifact_uuid = str(uuid.uuid4())
+
+    prompt = generation.Prompt(
+        # echo_back=converter is not None,
+        artifact=generation.Artifact(
+            type=generation.ARTIFACT_HINT_IMAGE,
+            uuid=artifact_uuid,
+            binary=buf.getvalue(),
+            hint_image_type=hint_type,
+        ),
+        parameters=generation.PromptParameters(weight=weight, hint_priority=priority),
+    )
+
+    add_converter_to_hint_image_prompt(prompt, remove_bg, converter, args)
+
+    return prompt
+
+
+def ref_to_prompt(ref_uuid, type, stage=generation.ARTIFACT_AFTER_ADJUSTMENTS):
     return generation.Prompt(
         artifact=generation.Artifact(
             type=type,
-            ref=generation.ArtifactReference(
-                uuid=ref_uuid, stage=generation.ARTIFACT_AFTER_ADJUSTMENTS
+            ref=generation.ArtifactReference(uuid=ref_uuid, stage=stage),
+        )
+    )
+
+
+def sha256sum(filename):
+    h = hashlib.sha256()
+    b = bytearray(128 * 1024)
+    mv = memoryview(b)
+    with open(filename, "rb", buffering=0) as f:
+        while n := f.readinto(mv):
+            h.update(mv[:n])
+    return h.hexdigest()
+
+
+def cache_id(path):
+    system_id = machineid.hashed_id("gyre-client")
+    file_hash = sha256sum(path)
+    return f"{system_id}-{file_hash}"
+
+
+USE_DEPRECATED = False
+
+
+def lora_to_prompt(path, weights, from_cache=False):
+    parameters = generation.PromptParameters()
+
+    if weights and len(weights) == 1:
+        parameters.weight = weights[0]
+    elif weights and len(weights) == 2:
+        parameters.named_weights.append(
+            generation.NamedWeight(name="unet", weight=weights[0])
+        )
+        parameters.named_weights.append(
+            generation.NamedWeight(name="text_encoder", weight=weights[1])
+        )
+
+    if ":" in path:
+        return generation.Prompt(
+            artifact=generation.Artifact(type=generation.ARTIFACT_LORA, url=path),
+            parameters=parameters,
+        )
+
+    elif from_cache:
+        return generation.Prompt(
+            artifact=generation.Artifact(
+                type=generation.ARTIFACT_LORA, cache_id=cache_id(path)
             ),
-        )
-    )
-
-
-def lora_to_prompt(path, weights):
-    safetensors = safe_open(path, framework="pt", device="cpu")
-
-    lora = generation.Lora(lora=serialize_safetensor(safetensors))
-
-    if weights:
-        lora.weights.append(
-            generation.LoraWeight(model_name="unet", weight=weights.pop(0))
+            parameters=parameters,
         )
 
-    if weights:
-        lora.weights.append(
-            generation.LoraWeight(model_name="text_encoder", weight=weights.pop(0))
+    else:
+        ext = os.path.splitext(path)[1]
+
+        if ext in {".bin", ".pt"}:
+            tensordict = torch.load(path, "cpu")
+            grpc_safetensors = serialize_safetensor_from_dict(tensordict)
+        else:
+            safetensors = safe_open(path, framework="pt", device="cpu")
+            grpc_safetensors = serialize_safetensor(safetensors)
+
+        return generation.Prompt(
+            artifact=generation.Artifact(
+                type=generation.ARTIFACT_LORA,
+                safetensors=grpc_safetensors,
+                cache_control=generation.CacheControl(
+                    cache_id=cache_id(path), max_age=60 * 60  # Cache for an hour
+                ),
+            ),
+            parameters=parameters,
         )
 
-    return generation.Prompt(
-        artifact=generation.Artifact(
-            type=generation.ARTIFACT_LORA,
-            lora=lora,
-        ),
-    )
+
+def ti_to_prompts(path, override_tokens, from_cache=False):
+
+    parameters = generation.PromptParameters()
+    for token in override_tokens:
+        parameters.token_overrides.append(generation.TokenOverride(token=token))
+
+    if ":" in path:
+        prompt = generation.Prompt(
+            artifact=generation.Artifact(
+                type=generation.ARTIFACT_TOKEN_EMBEDDING, url=path
+            ),
+            parameters=parameters,
+        )
+
+    elif from_cache:
+        prompt = generation.Prompt(
+            artifact=generation.Artifact(
+                type=generation.ARTIFACT_TOKEN_EMBEDDING, cache_id=cache_id(path)
+            ),
+            parameters=parameters,
+        )
+
+    else:
+        data = torch.load(path, "cpu")
+
+        if "string_to_param" in data:
+            data = data["string_to_param"]
+
+        prompt = generation.Prompt(
+            artifact=generation.Artifact(
+                type=generation.ARTIFACT_TOKEN_EMBEDDING,
+                safetensors=serialize_safetensor_from_dict(data),
+                cache_control=generation.CacheControl(
+                    cache_id=cache_id(path), max_age=60 * 60  # Cache for an hour
+                ),
+            ),
+            parameters=parameters,
+        )
+
+    return [prompt]
 
 
 def process_artifacts_from_answers(
@@ -220,8 +470,15 @@ def process_artifacts_from_answers(
     for resp in answers:
         for artifact in resp.artifacts:
             artifact_p = f"{prefix}-{resp.request_id}-{resp.answer_id}-{idx}"
-            if artifact.type == generation.ARTIFACT_IMAGE:
-                ext = mimetypes.guess_extension(artifact.mime)
+            if artifact.type in {
+                generation.ARTIFACT_IMAGE,
+                generation.ARTIFACT_MASK,
+                generation.ARTIFACT_HINT_IMAGE,
+            }:
+                if artifact.mime == "image/webp":
+                    ext = ".webp"
+                else:
+                    ext = mimetypes.guess_extension(artifact.mime)
                 contents = artifact.binary
             elif artifact.type == generation.ARTIFACT_CLASSIFICATIONS:
                 ext = ".pb.json"
@@ -276,7 +533,7 @@ class StabilityInference:
         if verbose:
             logger.info(f"Opening channel to {host}")
 
-        maxMsgLength = 30 * 1024 * 1024  # 30 MB
+        maxMsgLength = 256 * 1024 * 1024  # 256 MB
 
         channel_options = [
             ("grpc.max_message_length", maxMsgLength),
@@ -316,21 +573,20 @@ class StabilityInference:
         self.stub = generation_grpc.GenerationServiceStub(channel)
         self.engine_stub = engines_grpc.EnginesServiceStub(channel)
 
-    def list_engines(self):
-        request = engines.ListEnginesRequest()
+    def list_engines(self, task_group=engines.GENERATE):
+        request = engines.ListEnginesRequest(task_group=task_group)
         print(self.engine_stub.ListEngines(request))
 
     def generate(
         self,
         prompt: Union[str, List[str], generation.Prompt, List[generation.Prompt]],
         negative_prompt: str = None,
+        clip_layer: Optional[int] = None,
         init_image: Optional[Image.Image] = None,
         mask_image: Optional[Image.Image] = None,
         mask_from_image_alpha: bool = False,
-        depth_image: Optional[Image.Image] = None,
-        depth_from_image: bool = False,
-        height: int = 512,
-        width: int = 512,
+        height: int | None = None,
+        width: int | None = None,
         start_schedule: float = 1.0,
         end_schedule: float = 0.01,
         cfg_scale: float = 7.0,
@@ -355,10 +611,13 @@ class StabilityInference:
         guidance_models: List[str] = None,
         hires_fix: bool | None = None,
         hires_oos_fraction: float | None = None,
-        tiling: bool = False,
+        tiling: str = "no",
+        hint_images: list[dict[str, str | float]] | None = None,
         lora: list[tuple[str, list[float]]] | None = None,
-        depth_engine: list[str] | None = None,
+        ti: list[tuple[str, list[str]]] | None = None,
         as_async=False,
+        from_cache=True,
+        accept_webp=True,
     ) -> Generator[generation.Answer, None, None]:
         """
         Generate images from a prompt.
@@ -405,6 +664,8 @@ class StabilityInference:
         for p in prompt:
             if isinstance(p, str):
                 p = generation.Prompt(text=p)
+                if clip_layer:
+                    p.parameters.clip_layer = clip_layer
             elif not isinstance(p, generation.Prompt):
                 raise TypeError("prompt must be a string or generation.Prompt object")
             prompts.append(p)
@@ -449,8 +710,10 @@ class StabilityInference:
             scaled_step=0, sampler=generation.SamplerParameters(**sampler_parameters)
         )
 
-        # NB: Specifying schedule when there's no init image causes washed out results
+        init_image_prompt = None
+
         if init_image is not None:
+            # NB: Specifying schedule when there's no init image causes washed out results
             step_parameters["schedule"] = generation.ScheduleParameters(
                 start=start_schedule,
                 end=end_schedule,
@@ -462,7 +725,9 @@ class StabilityInference:
                 prompts += [image_to_prompt(mask_image, mask=True)]
 
             elif mask_from_image_alpha:
-                mask_prompt = ref_to_prompt(init_image_prompt.artifact.uuid, mask=True)
+                mask_prompt = ref_to_prompt(
+                    init_image_prompt.artifact.uuid, type=generation.ARTIFACT_MASK
+                )
                 mask_prompt.artifact.adjustments.append(
                     generation.ImageAdjustment(
                         channels=generation.ImageAdjustment_Channels(
@@ -478,28 +743,49 @@ class StabilityInference:
                         invert=generation.ImageAdjustment_Invert()
                     )
                 )
+                mask_prompt.artifact.adjustments.append(
+                    generation.ImageAdjustment(
+                        blur=generation.ImageAdjustment_Gaussian(
+                            sigma=32, direction=generation.DIRECTION_UP
+                        )
+                    )
+                )
 
                 prompts += [mask_prompt]
 
-            if depth_image is not None:
-                prompts += [image_to_prompt(depth_image, depth=True)]
+        if hint_images:
+            for hint in hint_images:
+                if "image" not in hint:
+                    if init_image_prompt is None:
+                        raise ValueError(
+                            "Can't use hint_from_init without also passing init_image"
+                        )
 
-            if depth_from_image:
-                depth_prompt = ref_to_prompt(
-                    init_image_prompt.artifact.uuid, depth=True
-                )
-                depth_estimate = generation.ImageAdjustment(
-                    depth=generation.ImageAdjustment_Depth()
-                )
-                if depth_engine:
-                    depth_estimate.depth.depth_engine_hint.extend(depth_engine)
+                    hint_prompt = ref_to_prompt(
+                        init_image_prompt.artifact.uuid,
+                        type=generation.ARTIFACT_HINT_IMAGE,
+                    )
 
-                depth_prompt.artifact.adjustments.append(depth_estimate)
-                prompts += [depth_prompt]
+                    hint_prompt.echo_back = True
+                    hint_prompt.artifact.hint_image_type = hint["hint_type"]
+                    hint_prompt.parameters.weight = hint["weight"]
+                    hint_prompt.parameters.priority = hint["prioriy"]
+
+                    add_converter_to_hint_image_prompt(
+                        hint_prompt, hint["remove_bg"], hint["converter"], hint["args"]
+                    )
+                else:
+                    hint_prompt = hint_image_to_prompt(**hint)
+
+                prompts += [hint_prompt]
 
         if lora:
             for path, weights in lora:
-                prompts += [lora_to_prompt(path, weights)]
+                prompts += [lora_to_prompt(path, weights, from_cache=from_cache)]
+
+        if ti:
+            for path, overrides in ti:
+                prompts += ti_to_prompts(path, overrides, from_cache=from_cache)
 
         if guidance_prompt:
             if isinstance(guidance_prompt, str):
@@ -551,24 +837,41 @@ class StabilityInference:
 
             hires = generation.HiresFixParameters(**hires_params)
 
+        tiling_params = {}
+        if tiling == "xy" or tiling == "yes":
+            tiling_params["tiling"] = True
+        elif tiling == "x":
+            tiling_params["tiling_x"] = True
+        elif tiling == "y":
+            tiling_params["tiling_y"] = True
+
         image_parameters = generation.ImageParameters(
             transform=generation.TransformType(diffusion=sampler),
-            height=height,
-            width=width,
             seed=seed,
             steps=steps,
             samples=samples,
             parameters=[generation.StepParameter(**step_parameters)],
             hires=hires,
-            tiling=tiling,
+            **tiling_params,
         )
+
+        if height is not None:
+            image_parameters.height = height
+        if width is not None:
+            image_parameters.width = width
 
         if as_async:
             return self.emit_async_request(
-                prompt=prompts, image_parameters=image_parameters
+                prompt=prompts,
+                image_parameters=image_parameters,
+                accept_webp=accept_webp,
             )
         else:
-            return self.emit_request(prompt=prompts, image_parameters=image_parameters)
+            return self.emit_request(
+                prompt=prompts,
+                image_parameters=image_parameters,
+                accept_webp=accept_webp,
+            )
 
     # The motivation here is to facilitate constructing requests by passing protobuf objects directly.
     def emit_request(
@@ -577,18 +880,27 @@ class StabilityInference:
         image_parameters: generation.ImageParameters,
         engine_id: str = None,
         request_id: str = None,
+        accept_webp: bool = True,
     ):
         if not request_id:
             request_id = str(uuid.uuid4())
         if not engine_id:
             engine_id = self.engine
 
+        extra_kwargs = {}
+        if accept_webp:
+            extra_kwargs["accept"] = "image/webp, image/png"
+
         rq = generation.Request(
             engine_id=engine_id,
             request_id=request_id,
             prompt=prompt,
             image=image_parameters,
+            **extra_kwargs,
         )
+
+        # with open("request.json", "w") as f:
+        #     json.dump(MessageToDict(rq), f, indent=2)
 
         if self.verbose:
             logger.info("Sending request.")
@@ -630,17 +942,23 @@ class StabilityInference:
         image_parameters: generation.ImageParameters,
         engine_id: str = None,
         request_id: str = None,
+        accept_webp: bool = True,
     ):
         if not request_id:
             request_id = str(uuid.uuid4())
         if not engine_id:
             engine_id = self.engine
 
+        extra_kwargs = {}
+        if accept_webp:
+            extra_kwargs["accept"] = "image/webp, image/png"
+
         rq = generation.Request(
             engine_id=engine_id,
             request_id=request_id,
             prompt=prompt,
             image=image_parameters,
+            **extra_kwargs,
         )
 
         if self.verbose:
@@ -660,13 +978,18 @@ class StabilityInference:
 
         while True:
             answers = self.stub.AsyncResult(handle)
+
             for answer in answers.answer:
                 yield answer
 
             if answers.complete:
-                print("Done")
+                if answers.status.code:
+                    raise GrpcAsyncError(answers.status.code, answers.status.message)
 
-            time.sleep(5)
+                print("Done")
+                break
+
+            time.sleep(1)
 
 
 if __name__ == "__main__":
@@ -696,10 +1019,10 @@ if __name__ == "__main__":
     # CLI parsing
     parser = ArgumentParser()
     parser.add_argument(
-        "--height", "-H", type=int, default=512, help="[512] height of image"
+        "--height", "-H", type=int, default=None, help="[512] height of image"
     )
     parser.add_argument(
-        "--width", "-W", type=int, default=512, help="[512] width of image"
+        "--width", "-W", type=int, default=None, help="[512] width of image"
     )
     parser.add_argument(
         "--start_schedule",
@@ -817,20 +1140,15 @@ if __name__ == "__main__":
         help="Get the mask from the image alpha channel, rather than a seperate image",
     )
     parser.add_argument(
-        "--depth_image",
-        type=str,
-        help="Depth image",
-    )
-    parser.add_argument(
-        "--depth_from_image",
-        action="store_true",
-        help="Inference the depth from the image",
-    )
-    parser.add_argument(
         "--negative_prompt",
         "-N",
         type=str,
         help="Negative Prompt",
+    )
+    parser.add_argument(
+        "--clip_layer",
+        type=int,
+        help="Set the clip layer skip (1 is no skip, 2 is skip the first layer, and so on)",
     )
     parser.add_argument(
         "--hires_fix",
@@ -844,18 +1162,34 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tiling",
-        action=BooleanOptionalAction,
-        help="Enable or disable producing a tilable result",
+        type=str,
+        choices=["x", "y", "xy", "no", "yes"],
+        help="Select one or both axis to tile on",
+    )
+    parser.add_argument(
+        "--hint_image",
+        action="append",
+        help="Provide a hint image, in type:path[:weight][:priority] format (priority is balanced, hint or prompt)",
+    )
+    parser.add_argument(
+        "--hint_from_image",
+        action="append",
+        help="Provide a image to be converted to a hint image, in [nobg:]type[:converter_id]:path[:weight][:priority] format",
+    )
+    parser.add_argument(
+        "--hint_from_init",
+        action="append",
+        help="Provide a hint image by converting the init_image, in [nobg:]type[:converter_id][:weight][:priority] format",
     )
     parser.add_argument(
         "--lora",
         action="append",
-        help="Add a (safetensor format) Lora. Either a path, or path:unet_weight or path:unet_weight:text_encode_weight (i.e. ./lora_weight.safetensors:0.5:0.5)",
+        help="Add a Lora (cloneofsimo, diffusers or kohya-ss format). Either a path, or path:unet_weight or path:unet_weight:text_encode_weight (i.e. ./lora_weight.safetensors:0.5:0.5)",
     )
     parser.add_argument(
-        "--depth_engine",
+        "--ti",
         action="append",
-        help="Add a depth engine hint (you can provide multiple, the first matching will be used)",
+        help="Add a Textual Inversion. Either as a path, or path:token[:token] to override the tokens used (i.e. ./learned_embeds.bin:<token>)",
     )
     parser.add_argument(
         "--list_engines",
@@ -864,9 +1198,20 @@ if __name__ == "__main__":
         help="Print a list of the engines available on the server",
     )
     parser.add_argument(
+        "--list_upscalers",
+        action="store_true",
+        help="Print a list of the upscaler engines available on the server",
+    )
+    parser.add_argument(
         "--grpc_web",
         action="store_true",
         help="Use GRPC-WEB to connect to the server (instead of GRPC)",
+    )
+    parser.add_argument(
+        "--accept_webp",
+        action=BooleanOptionalAction,
+        default=True,
+        help="Accept webp responses from server (when server supports it)",
     )
     parser.add_argument("--as_async", action="store_true", help="Run asyncronously")
     parser.add_argument("prompt", nargs="*")
@@ -884,6 +1229,10 @@ if __name__ == "__main__":
         stability_api.list_engines()
         sys.exit(0)
 
+    if args.list_upscalers:
+        stability_api.list_engines(task_group=engines.UPSCALE)
+        sys.exit(0)
+
     if not args.prompt and not args.init_image:
         logger.warning("prompt or init image must be provided")
         parser.print_help()
@@ -897,18 +1246,102 @@ if __name__ == "__main__":
     if args.mask_image:
         args.mask_image = Image.open(args.mask_image)
 
-    if args.depth_image:
-        args.depth_image = Image.open(args.depth_image)
-
     lora = []
     if args.lora:
         for path in args.lora:
-            path, *weights = path.split(":")
-            weights = [float(weight) for weight in weights]
+            parts = path.split(":")
+
+            path_parts = []
+            while parts and not floatlike(parts[0]):
+                path_parts += [parts.pop(0)]
+            path = ":".join(path_parts)
+
+            weights = [float(weight) for weight in parts]
+
+            print("Lora", path, weights)
             lora.append((path, weights))
+
+    ti = []
+    if args.ti:
+        for path in args.ti:
+            parts = path.split(":")
+            if parts[0] == "https" or parts[0] == "file":
+                path, tokens = parts[0] + ":" + parts[1], parts[2:]
+            else:
+                path, tokens = parts[0], parts[1:]
+
+            ti.append((path, tokens))
+
+    def parse_hint(hint, path, converter):
+        args = {}
+
+        if hint.endswith(")"):
+            hint, argstr = hint.split("(", 1)
+            argstr = argstr[:-1]
+
+            args = yaml.load(
+                "{" + argstr.replace("=", ": ") + "}", Loader=yaml.SafeLoader
+            )
+
+        parts = hint.split(":")
+
+        remove_bg = False
+        if parts[0] == "nobg":
+            parts.pop(0)
+            remove_bg = True
+
+        priority = generation.HINT_BALANCED
+        if parts[-1] in {"balanced", "prompt", "hint"}:
+            if parts[-1] == "balanced":
+                priority = generation.HINT_BALANCED
+            elif parts[-1] == "prompt":
+                priority = generation.HINT_PRIORITISE_PROMPT
+            elif parts[-1] == "hint":
+                priority = generation.HINT_PRIORITISE_HINT
+            parts = parts[:-1]
+
+        try:
+            weight = float(parts[-1])
+            parts = parts[:-1]
+        except ValueError:
+            weight = 1.0
+
+        hint_info = {
+            "hint_type": parts.pop(0),
+            "remove_bg": remove_bg,
+            "weight": weight,
+            "priority": priority,
+            "args": args,
+        }
+
+        if path:
+            if not parts:
+                raise ValueError(
+                    "No path provided for hint - did you mean hint_from_init?"
+                )
+            hint_info["image"] = Image.open(parts.pop())
+
+        if converter:
+            hint_info["converter"] = parts[0] if parts else True
+
+        return hint_info
+
+    hint_images = []
+    if args.hint_image:
+        for hint in args.hint_image:
+            hint_images.append(parse_hint(hint, path=True, converter=False))
+
+    if args.hint_from_image:
+        for hint in args.hint_from_image:
+            hint_images.append(parse_hint(hint, path=True, converter=True))
+
+    if args.hint_from_init:
+        for hint in args.hint_from_init:
+            hint_images.append(parse_hint(hint, path=False, converter=True))
 
     request = {
         "negative_prompt": args.negative_prompt,
+        "clip_layer": args.clip_layer,
         "height": args.height,
         "width": args.width,
         "start_schedule": args.start_schedule,
@@ -930,23 +1363,46 @@ if __name__ == "__main__":
         "init_image": args.init_image,
         "mask_image": args.mask_image,
         "mask_from_image_alpha": args.mask_from_image_alpha,
-        "depth_image": args.depth_image,
-        "depth_from_image": args.depth_from_image,
         "hires_fix": args.hires_fix,
         "hires_oos_fraction": args.hires_oos_fraction,
         "tiling": args.tiling,
+        "hint_images": hint_images,
         "lora": lora,
-        "depth_engine": args.depth_engine,
+        "ti": ti,
         "as_async": args.as_async,
     }
 
-    answers = stability_api.generate(args.prompt, **request)
-    artifacts = process_artifacts_from_answers(
-        args.prefix, answers, write=not args.no_store, verbose=True
-    )
-    if args.show:
-        for artifact in open_images(artifacts, verbose=True):
-            pass
-    else:
-        for artifact in artifacts:
-            pass
+    try:
+        answers = stability_api.generate(
+            args.prompt, **request, from_cache=True, accept_webp=args.accept_webp
+        )
+
+        artifacts = process_artifacts_from_answers(
+            args.prefix, answers, write=not args.no_store, verbose=True
+        )
+
+        if args.show:
+            for artifact in open_images(artifacts, verbose=True):
+                pass
+        else:
+            for artifact in artifacts:
+                pass
+    except Exception as e:
+        if (
+            isinstance(e, grpc.Call | GrpcAsyncError)
+            and e.code() is grpc.StatusCode.FAILED_PRECONDITION
+        ):
+            answers = stability_api.generate(args.prompt, **request, from_cache=False)
+
+            artifacts = process_artifacts_from_answers(
+                args.prefix, answers, write=not args.no_store, verbose=True
+            )
+
+            if args.show:
+                for artifact in open_images(artifacts, verbose=True):
+                    pass
+            else:
+                for artifact in artifacts:
+                    pass
+        else:
+            raise e

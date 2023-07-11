@@ -1,13 +1,16 @@
 # Copied mostly completely from https://github.com/huggingface/diffusers/blob/main/examples/community/lpw_stable_diffusion.py
 # Minimal modifications to allow copy/pasting in the case of updates
 
+import logging
 import re
 from typing import List, Optional, Union
 
 import torch
 from transformers.models.clip import CLIPTextModel, CLIPTokenizer
 
-from .text_embedding import TextEmbedding
+from gyre.pipeline.text_embedding.text_embedding import TextEmbedding
+
+logger = logging.getLogger(__name__)
 
 re_attention = re.compile(
     r"""
@@ -235,6 +238,7 @@ def get_unweighted_text_embeddings(
 def get_weighted_text_embeddings(
     tokenizer: CLIPTokenizer,
     text_encoder: CLIPTextModel,
+    uncond_encoder: CLIPTextModel,
     device: torch.device,
     prompt: Union[str, List[str]],
     uncond_prompt: Optional[Union[str, List[str]]] = None,
@@ -349,7 +353,7 @@ def get_weighted_text_embeddings(
     )
     if uncond_prompt is not None:
         uncond_embeddings = get_unweighted_text_embeddings(
-            text_encoder,
+            uncond_encoder,
             uncond_tokens,
             tokenizer.model_max_length,
             no_boseos_middle=no_boseos_middle,
@@ -383,14 +387,15 @@ def get_weighted_text_embeddings(
 
 
 class LPWTextEmbedding(TextEmbedding):
-    def __init__(self, pipe, text_encoder, max_embeddings_multiples, **kwargs):
-        super().__init__(pipe, text_encoder, **kwargs)
+    def __init__(self, max_embeddings_multiples, **kwargs):
+        super().__init__(**kwargs)
         self.max_embeddings_multiples = max_embeddings_multiples
 
     def get_embeddings(self, prompt, uncond_prompt=None):
         return get_weighted_text_embeddings(
-            tokenizer=self.pipe.tokenizer,
+            tokenizer=self.tokenizer,
             text_encoder=self.text_encoder,
+            uncond_encoder=self.uncond_encoder,
             device=self.device,
             prompt=prompt.as_tokens(),
             uncond_prompt=uncond_prompt.as_tokens()

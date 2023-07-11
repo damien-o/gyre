@@ -4,15 +4,28 @@
 <head>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/milligram/1.4.1/milligram.css">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
+
 
     <script id="data-island" type="application/json">
         $DATA$
     </script>
 
+    <script type="importmap">
+        {
+            "imports": {
+                "preact": "https://unpkg.com/preact@latest/dist/preact.module.js",
+                "preact/hooks": "https://unpkg.com/preact@latest/hooks/dist/hooks.module.js",
+                "preact/compat": "https://unpkg.com/preact@latest/compat/dist/compat.module.js",
+                "htm": "https://unpkg.com/htm?module"
+            }
+        }
+    </script>
+
     <script type="module">
-        import { h, Component, render, createContext } from 'https://unpkg.com/preact@latest?module';
-        import { useState, useContext, useCallback, useEffect, useLayoutEffect, useRef } from 'https://unpkg.com/preact@latest/hooks/dist/hooks.module.js?module';
-        import htm from 'https://unpkg.com/htm?module';
+        import { h, Component, render, createContext } from 'preact';
+        import { useState, useContext, useCallback, useEffect, useLayoutEffect, useRef } from 'preact/hooks';
+        import htm from 'htm';
 
         // Initialize htm with Preact
         const html = htm.bind(h);
@@ -20,8 +33,46 @@
         // Load the data island
         const dataContext = createContext(JSON.parse(document.getElementById("data-island").innerText));
 
+        function Thumbnail(props) {
+            return html`<a className="thumbnail" href="${props.url}" onclick=${(e) => { e.preventDefault(); props.setImagePopupUrl(props.url) }}>
+                <img src="data:image/png;base64,${props.thumbnail}" />
+            </a>`;
+        }
+
         function LogLine(props) {
-            return html`<div>${props.message}</div>`;
+            if (props.message) {
+                return html`<div>${props.message}</div>`;
+            }
+            else {
+                const fragEls = props.fragments.map(frag =>
+                    typeof (frag) == "string" ?
+                        html`<span>${frag}</span>` :
+                        html`<${Thumbnail} setImagePopupUrl=${props.setImagePopupUrl} ...${frag} />`
+                );
+
+                return html`<div>${fragEls}</div>`;
+            }
+        }
+
+        const icons = {
+            "DEBUG": "bug_report",
+            "INFO": "info",
+            "WARNING": "warning",
+            "ERROR": "error",
+            "CRITICAL": "release_alert"
+        }
+
+        function LogGroup(props) {
+            const icon = icons[props.group[0].level]
+
+            return html`<div class="log-group ${props.group[0].level}">
+                <div class="log-margin">
+                    <span class="material-symbols-outlined">${icon}</span>
+                </div>
+                <div class="log-lines">
+                    ${props.group.map((line, i) => html`<${LogLine} setImagePopupUrl=${props.setImagePopupUrl} key=${i} ...${line} />`)}
+                </div>
+            </div>`;
         }
 
         function Log(props) {
@@ -50,31 +101,133 @@
             // If no log, show nothing
             if (!data.logs) return null;
 
+            const grouped = []
+            let last = null
+            let group = []
+
+            for (let line of data.logs) {
+                if (last !== null && (last.name != line.name || last.level != line.level)) {
+                    grouped.push(group)
+                    group = []
+                }
+                group.push(line)
+                last = line
+            }
+
+            grouped.push(group)
+
             // Render
             return html`<div>
-                <h6>Logs</h6>
+                <h3>Logs</h3>
                 <pre><code class="log" onscroll=${onScrollHandler} ref=${scrollRef}>
-                    ${data.logs.map((line, i) => html`<${LogLine} key=${i} ...${line} />`)}
+                    ${grouped.map((group, i) => html`<${LogGroup} setImagePopupUrl=${props.setImagePopupUrl} key=${i} group=${group} />`)} 
                 </code></pre>
             </div>`;
         }
 
+        function ProgressBar({ n, total, prefix, postfix, ...props }) {
+            let barsize = (n * 10) % 100;
+            let barlabel = n;
+            if (total) {
+                barsize = Math.round(n / total * 100);
+                barlabel = barsize + "%";
+            }
+
+            return html`<div class="progress">
+                ${prefix ? html`<div class="progress-prefix">${prefix}</div>` : ""}
+                <div class="progress-bar" style="flex: ${barsize}">${barlabel}</div>
+                <div class="progress-spacer" style="flex: ${100 - barsize}"></div>
+                ${postfix ? html`<div class="progress-postfix">${postfix}</div>` : ""}
+            </div>`;
+        }
 
         function Status(props) {
             const data = useContext(dataContext);
 
+            var icon = null;
+            if (data.status == "created") {
+                icon = "clock_loader_40";
+            }
+            if (data.status == "loading") {
+                icon = "clock_loader_60";
+            }
+            if (data.status == "ready") {
+                icon = "check_circle";
+            }
+            if (data.status == "error") {
+                icon = "error";
+            }
+
+            const status = data.status[0].toUpperCase() + data.status.substr(1);
+
             return html`
-                <h4>
-                    Status: ${data.status}
+                <h3 className="status-${data.status}">
+                    ${icon ? html`<span class="material-symbols-outlined">${icon}</span>` : ""}
+                    ${status}
+
                     ${data.substatus ? html`<div class="subh">${data.substatus}</div>` : ""}
-                </h4>
+                </h3>
             `;
+        }
+
+        function Slot(props) {
+            return html`
+                <tr>
+                    <td>${props.device}</td>
+                    <td>${props.pipeline || "none"}</td>
+                    <td>${props.progress ? html`<${ProgressBar} ...${props.progress} />` : ""}</td>
+                </tr>
+            `;
+        }
+
+        function Slots({ slots, ...props }) {
+            return html`
+                <table>
+                    <tr>
+                        <th class="col-device">Device</th>
+                        <th class="col-pipeline">Active Pipeline</th>
+                        <th class="col-progress">Progress</th>
+                    </tr>
+                    ${slots.map(slot => html`<${Slot} ...${slot} key=${slot.device} />`)}
+                </table>
+            `;
+        }
+
+        function SubDetails(props) {
+            const data = useContext(dataContext);
+
+            return html`
+                <h3>Activity monitor</h3>
+                <p>
+                    ${data.progress ? data.progress.map(bar => html`<${ProgressBar} ...${bar} />`) : ""}
+                </p>
+                ${data.slots ? html`<${Slots} slots=${data.slots} />` : ""}
+                <h3>System stats</h3>
+                <ul>
+                    <li>Total threads: ${data.active_threads}</li>
+                    <li>Threads waiting for slot: ${data.queue_depth}</li>
+                </ul>
+            `;
+        }
+
+        function Modal(props) {
+            return html`<div onclick=${(e) => { e.stopPropagation(); props.setImagePopupUrl(null) }} class="modal-bg">
+                <div class="modal">
+                    <img src=${props.url} />
+                </div>
+            </div>`
         }
 
         function App(props) {
             const [dataStore, setDataStore] = useState(JSON.parse(document.getElementById("data-island").innerText));
 
-            const refreshData = useCallback(async () => {
+            const [imagePopupUrl, setImagePopupUrl] = useState(null)
+
+            const refreshData = useCallback(async (previous) => {
+                // This callback isn't rebuilt when dataStore updates, so we pass
+                // the previous value through to use in case of error
+                if (previous === null) previous = dataStore;
+
                 let data;
 
                 try {
@@ -87,11 +240,19 @@
                     data = await res.json();
                 }
                 catch (e) {
-                    data = { ...dataStore, "status": "error ", "substatus": "" + e };
+                    data = { ...previous, "status": "error", "substatus": "" + e };
+                }
+
+                if (!data.status) {
+                    data = {
+                        ...previous,
+                        status: "error",
+                        substatus: "Data was returned from server malformed",
+                    }
                 }
 
                 setDataStore(data)
-                setTimeout(refreshData, data.status == "ready" ? 2000 : 500);
+                setTimeout(refreshData, data.status == "ready" ? 2000 : 500, data);
             }, []);
 
             useEffect(refreshData, []);
@@ -100,7 +261,9 @@
                 <${dataContext.Provider} value=${dataStore}>
                     <h1><img src='https://gyre.ai/img/gyrelogo-256.png' alt='Gyre.ai logo'/>Gyre server status</h1>
                     <${Status} />
-                    <${Log} />
+                    <${Log} setImagePopupUrl=${setImagePopupUrl} />
+                    <${SubDetails} />
+                    ${imagePopupUrl ? html`<${Modal} url=${imagePopupUrl} setImagePopupUrl=${setImagePopupUrl} />` : ''}
                 </${dataContext.Provider}>
                 `;
         }
@@ -134,8 +297,105 @@
         }
 
         .log {
-            max-height: 200px;
+            max-height: 400px;
             overflow: auto;
+            white-space: pre-wrap;
+        }
+
+        .log-group {
+            display: flex;
+        }
+
+        .log-group .log-margin {
+            width: 42px;
+            text-align: center;
+            flex-shrink: 0;
+            margin-right: 6px;
+        }
+
+        .log-group .log-margin span {
+            margin-top: 6px;
+        }
+
+        .log-group.DEBUG .log-margin {
+            color: rgb(38, 112, 38);
+        }
+
+        .log-group.WARNING .log-margin {
+            color: rgb(117, 79, 13);
+        }
+
+        .log-group.ERROR .log-margin {
+            background: rgb(106, 18, 18);
+            color: white;
+        }
+
+        .log-group .log-lines {
+            padding: 6px 0;
+            flex-grow: 1;
+            min-height: 24px;
+            border-top: 1px solid #ddd;
+        }
+
+        .log-group .log-lines img {
+            vertical-align: middle;
+        }
+
+        .thumbnail>img {
+            margin: 6px 0;
+        }
+
+        h3.status-error {
+            color: red;
+        }
+
+        h3.status-ready {
+            color: green;
+        }
+
+        h3 .material-symbols-outlined {
+            margin: 0 0.5rem;
+            vertical-align: middle;
+        }
+
+        .modal-bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal {
+            min-height: 128px;
+            min-width: 128px;
+            background: white;
+        }
+
+        .modal>img {
+            display: block;
+        }
+
+        .progress {
+            display: flex
+        }
+
+        .progress-prefix {
+            margin-right: 6px;
+        }
+
+        .progress-bar {
+            background-color: lightslategray;
+            color: white;
+            padding: 0 6px;
+        }
+
+        .progress-postfix {
+            margin-left: 6px;
         }
     </style>
 </head>

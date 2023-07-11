@@ -1,33 +1,37 @@
 import inspect
+import logging
 import os
 import re
 import traceback
 
 import grpc
 
-return_traceback = os.environ.get("SD_ENV", "dev").lower().startswith("dev")
+from gyre.constants import IS_DEV
+
+return_traceback = IS_DEV
+
+logger = logging.getLogger(__name__)
 
 
 def _handle_exception(func, e, context, mappings):
-    stack = [f"Exception in handler {func.__name__}. "]
+    details = [f"Exception in handler {func.__name__}. "]
 
     for block in traceback.format_exception(e):
-        stack.append(block)
+        details.append(block)
 
-    stack = "".join(stack)
-    print(stack, end=None)
+    details = "".join(details)
 
     code, message = grpc.StatusCode.INTERNAL, "Internal Error"
     for exception_class, grpc_code in mappings.items():
         if isinstance(e, exception_class):
-            code = grpc_code
-            message = str(e)
+            if callable(grpc_code):
+                code, message, details = grpc_code(e, details)
+            else:
+                code, message = grpc_code, str(e)
             break
 
-    context.abort(
-        code,
-        stack if return_traceback else message,
-    )
+    logger.error(details)
+    context.abort(code, details if return_traceback else message)
 
 
 def _exception_to_grpc_generator(func, mappings):
@@ -43,6 +47,10 @@ def _exception_to_grpc_generator(func, mappings):
             # Allow grpc / whatever-called-Servicer to receive RpcError
             raise e
         except Exception as e:
+            # Pass through any errors raised by context.abort (why doesn't it use RpcError? Good question!)
+            if type(e) is Exception and context.code() is not None:
+                raise e
+
             _handle_exception(func, e, context, mappings)
 
     return wrapper
@@ -61,6 +69,10 @@ def _exception_to_grpc_unary(func, mappings):
             # Allow grpc / whatever-called-Servicer to receive RpcError
             raise e
         except Exception as e:
+            # Pass through any errors raised by context.abort (same passive-agressive moan as above :p)
+            if type(e) is Exception and context.code() is not None:
+                raise e
+
             _handle_exception(func, e, context, mappings)
 
     return wrapper

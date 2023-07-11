@@ -15,13 +15,14 @@ dependencies = [
   "einops ~= 0.5.0",
   "torchvision ~= 0.13.1",
   "numpy ~= 1.23.3",
-  "opencv-python-headless ~= 4.6.0.66",
+  "opencv-python ~= 4.7.0.72",
   "scipy ~= 1.9.1",
   "ftfy ~= 6.1.1",
-  "transformers ~= 4.25.1",
-  "diffusers ~= 0.11.1",
-  "accelerate ~= 0.13.2",
+  "transformers ~= 4.28.1",
+  "diffusers ~= 0.16.0",
+  "accelerate ~= 0.18.0",
   "easing-functions ~= 1.0.4",
+  "huggingface-hub >= 0.13.4",
   # For ToMe
   "timm ~= 0.6.11",
   # For Structured Diffusion
@@ -32,6 +33,14 @@ dependencies = [
   "torchsde ~= 0.2.5",
   # For MiDaS
   "imutils ~= 0.5.4",
+  # For Hinters
+  "kornia ~= 0.6.10",
+  # For mmXXX
+  "mmcv-full ~= 1.7.1",
+  "json-tricks ~= 3.16.1",
+  "prettytable ~= 3.6.0",
+  "terminaltables ~= 3.1.10",
+  "munkres ~= 1.1.4",
   # For Server
   "protobuf ~= 3.20",
   "grpcio ~= 1.48.1",
@@ -46,12 +55,19 @@ dependencies = [
   "accept-types ~= 0.4.1",
   "gdown ~= 4.6.2",
   "colorama ~= 0.4.6",
-   # For Tests
+  # For client
+  "py-machineid ~= 0.3.0",
+  # For Tests
   "pynvml ~= 11.4.1",
 ]
 
 [project.optional-dependencies]
-dev = ["black ~= 22.10.0", "flake8 ~= 6.0.0", "flake8-pyproject ~= 1.2.1"]
+# These are used by the VSCode configuration to format the python code consistently
+dev = [
+  "black ~= 22.10.0", 
+  "flake8 ~= 6.0.0", 
+  "flake8-pyproject ~= 1.2.1"
+]
 
 [project.urls]
 Home = "https://github.com/stablecabal/gyre"

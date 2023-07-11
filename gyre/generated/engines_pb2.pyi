@@ -58,6 +58,25 @@ GPT2: EngineTokenizer.ValueType  # 0
 PILE: EngineTokenizer.ValueType  # 1
 global___EngineTokenizer = EngineTokenizer
 
+class _EngineTaskGroup:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _EngineTaskGroupEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_EngineTaskGroup.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    GENERATE: _EngineTaskGroup.ValueType  # 0
+    UPSCALE: _EngineTaskGroup.ValueType  # 1
+    UTILITY: _EngineTaskGroup.ValueType  # 2
+    HINTER: _EngineTaskGroup.ValueType  # 3
+
+class EngineTaskGroup(_EngineTaskGroup, metaclass=_EngineTaskGroupEnumTypeWrapper): ...
+
+GENERATE: EngineTaskGroup.ValueType  # 0
+UPSCALE: EngineTaskGroup.ValueType  # 1
+UTILITY: EngineTaskGroup.ValueType  # 2
+HINTER: EngineTaskGroup.ValueType  # 3
+global___EngineTaskGroup = EngineTaskGroup
+
 @typing_extensions.final
 class EngineSampler(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
@@ -90,6 +109,25 @@ class EngineSampler(google.protobuf.message.Message):
 global___EngineSampler = EngineSampler
 
 @typing_extensions.final
+class EngineHintImageType(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    TYPE_FIELD_NUMBER: builtins.int
+    PROVIDER_FIELD_NUMBER: builtins.int
+    type: builtins.str
+    @property
+    def provider(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.str]: ...
+    def __init__(
+        self,
+        *,
+        type: builtins.str = ...,
+        provider: collections.abc.Iterable[builtins.str] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["provider", b"provider", "type", b"type"]) -> None: ...
+
+global___EngineHintImageType = EngineHintImageType
+
+@typing_extensions.final
 class EngineInfo(google.protobuf.message.Message):
     """Engine info struct"""
 
@@ -104,6 +142,8 @@ class EngineInfo(google.protobuf.message.Message):
     DESCRIPTION_FIELD_NUMBER: builtins.int
     SUPPORTED_SAMPLERS_FIELD_NUMBER: builtins.int
     ACCEPTED_PROMPT_ARTIFACTS_FIELD_NUMBER: builtins.int
+    ACCEPTED_HINT_TYPES_FIELD_NUMBER: builtins.int
+    TASK_FIELD_NUMBER: builtins.int
     id: builtins.str
     owner: builtins.str
     ready: builtins.bool
@@ -115,6 +155,9 @@ class EngineInfo(google.protobuf.message.Message):
     def supported_samplers(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___EngineSampler]: ...
     @property
     def accepted_prompt_artifacts(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[generation_pb2.ArtifactType.ValueType]: ...
+    @property
+    def accepted_hint_types(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___EngineHintImageType]: ...
+    task: builtins.str
     def __init__(
         self,
         *,
@@ -127,20 +170,26 @@ class EngineInfo(google.protobuf.message.Message):
         description: builtins.str = ...,
         supported_samplers: collections.abc.Iterable[global___EngineSampler] | None = ...,
         accepted_prompt_artifacts: collections.abc.Iterable[generation_pb2.ArtifactType.ValueType] | None = ...,
+        accepted_hint_types: collections.abc.Iterable[global___EngineHintImageType] | None = ...,
+        task: builtins.str = ...,
     ) -> None: ...
-    def ClearField(self, field_name: typing_extensions.Literal["accepted_prompt_artifacts", b"accepted_prompt_artifacts", "description", b"description", "id", b"id", "name", b"name", "owner", b"owner", "ready", b"ready", "supported_samplers", b"supported_samplers", "tokenizer", b"tokenizer", "type", b"type"]) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["accepted_hint_types", b"accepted_hint_types", "accepted_prompt_artifacts", b"accepted_prompt_artifacts", "description", b"description", "id", b"id", "name", b"name", "owner", b"owner", "ready", b"ready", "supported_samplers", b"supported_samplers", "task", b"task", "tokenizer", b"tokenizer", "type", b"type"]) -> None: ...
 
 global___EngineInfo = EngineInfo
 
 @typing_extensions.final
 class ListEnginesRequest(google.protobuf.message.Message):
-    """Empty"""
-
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
+    TASK_GROUP_FIELD_NUMBER: builtins.int
+    task_group: global___EngineTaskGroup.ValueType
+    """Empty"""
     def __init__(
         self,
+        *,
+        task_group: global___EngineTaskGroup.ValueType = ...,
     ) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["task_group", b"task_group"]) -> None: ...
 
 global___ListEnginesRequest = ListEnginesRequest
 

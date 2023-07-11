@@ -1,4 +1,3 @@
-import gc
 import glob
 import hashlib
 import importlib
@@ -8,49 +7,75 @@ import json
 import logging
 import math
 import os
-import queue
 import shutil
+import sys
 import tempfile
-from collections import Counter
+import traceback
+from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from queue import Queue
 from types import SimpleNamespace as SN
-from typing import Any, Callable, Iterable, Literal, Optional, Union
+from typing import Any, Callable, Iterable, Literal
 from urllib.parse import urlparse
 
 import generation_pb2
 import huggingface_hub
+import pynvml
+import safetensors.torch
 import torch
-from diffusers import ModelMixin, UNet2DConditionModel, pipelines
+import yaml
+from diffusers import ModelMixin, pipelines
 from diffusers.configuration_utils import FrozenDict
-from diffusers.pipeline_utils import DiffusionPipeline, is_safetensors_compatible
-from diffusers.utils import deprecate
+from diffusers.pipelines.pipeline_utils import (
+    DiffusionPipeline,
+    is_safetensors_compatible,
+)
 from huggingface_hub.file_download import http_get
-from tqdm.auto import tqdm
-from transformers import CLIPModel, PreTrainedModel
+from transformers import PreTrainedModel
 
-from gyre import ckpt_utils
-from gyre.constants import sd_cache_home
-from gyre.pipeline.model_utils import GPUExclusionSet, clone_model
-from gyre.pipeline.samplers import build_sampler_set
-from gyre.pipeline.unified_pipeline import (
-    SCHEDULER_NOISE_TYPE,
-    UnifiedPipelineImageType,
-    UnifiedPipelinePromptType,
+from gyre import civitai, ckpt_utils, torch_safe_unpickler
+from gyre.constants import IS_DEV, sd_cache_home
+from gyre.hints import HintsetManager
+from gyre.monitoring_queue import MonitoringQueue
+from gyre.pipeline import pipeline_meta
+from gyre.pipeline.model_utils import clone_model
+from gyre.pipeline.pipeline_wrapper import DiffusionPipelineWrapper, PipelineWrapper
+from gyre.pipeline.upscalers.diffusers_upscaler_wrapper import (
+    DiffusionUpscalerPipelineWrapper,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_LIBRARIES = {
     "StableDiffusionPipeline": "stable_diffusion",
+    "StableDiffusionUpscalePipeline": "stable_diffusion",
+    "StableDiffusionLatentUpscalePipeline": "stable_diffusion",
     "UnifiedPipeline": "gyre.pipeline.unified_pipeline",
-    "UpscalerPipeline": "gyre.pipeline.upscaler_pipeline",
     "DiffusersDepthPipeline": "gyre.pipeline.depth.diffusers_depth_pipeline",
-    "MidasDepthPipeline": "gyre.pipeline.depth.midas_depth_pipeline",
     "MidasModelWrapper": "gyre.pipeline.depth.midas_model_wrapper",
+    "MidasDepthPipeline": "gyre.pipeline.depth.midas_depth_pipeline",
+    "ZoeModelWrapper": "gyre.pipeline.depth.zoe_model_wrapper",
+    "ZoeDepthPipeline": "gyre.pipeline.depth.zoe_depth_pipeline",
+    "T2iAdapter": "gyre.pipeline.t2i_adapter",
+    "ControlNetModel": "gyre.pipeline.controlnet",
+    "HED": "gyre.pipeline.hinters.models.hed",
+    "HedPipeline": "gyre.pipeline.hinters.hed_pipeline",
+    "DexiNed": "kornia.filters",
+    "DexinedPipeline": "gyre.pipeline.hinters.dexined_pipeline",
+    "MmLoader": "gyre.pipeline.hinters.mm_loader",
+    "MmsegPipeline": "gyre.pipeline.hinters.mmseg_pipeline",
+    "MmposePipeline": "gyre.pipeline.hinters.mmpose_pipeline",
+    "InSPyReNet_SwinB": "gyre.pipeline.hinters.inspyrenet.InSPyReNet",
+    "InSPyReNetPipeline": "gyre.pipeline.hinters.inspyrenet_pipeline",
+    "BaenormalLoader": "gyre.pipeline.hinters.baenormal_loader",
+    "BaenormalPipeline": "gyre.pipeline.hinters.baenormal_pipeline",
+    "DrawingGenerator": "gyre.pipeline.hinters.models.informative_drawings",
+    "InformativeDrawingPipeline": "gyre.pipeline.hinters.informative_drawing_pipeline",
+    "UpscalerLoader": "gyre.pipeline.upscalers.upscaler_loader",
+    "UpscalerPipeline": "gyre.pipeline.upscalers.upscaler_pipeline",
 }
+
 
 TYPE_CLASSES = {
     "vae": "diffusers.AutoencoderKL",
@@ -62,55 +87,32 @@ TYPE_CLASSES = {
     "clip_tokenizer": "transformers.CLIPTokenizer",
     "text_encoder": "transformers.CLIPTextModel",
     "inpaint_text_encoder": "transformers.CLIPTextModel",
-    "upscaler": "gyre.pipeline.upscaler_pipeline.NoiseLevelAndTextConditionedUpscaler",
     "depth_estimator": "transformers.DPTForDepthEstimation",
     "midas_depth_estimator": "MidasModelWrapper",
+    "zoe_depth_estimator": "ZoeModelWrapper",
+    "t2i_adapter": "T2iAdapter",
+    "controlnet": "ControlNetModel",
 }
 
 
-class ProgressBarWrapper(object):
-    class InternalTqdm(tqdm):
-        def __init__(self, progress_callback, stop_event, suppress_output, iterable):
-            self._progress_callback = progress_callback
-            self._stop_event = stop_event
-            super().__init__(iterable, disable=suppress_output)
-
-        def update(self, n=1):
-            displayed = super().update(n)
-            if displayed and self._progress_callback:
-                self._progress_callback(**self.format_dict)
-            return displayed
-
-        def __iter__(self):
-            for x in super().__iter__():
-                if self._stop_event and self._stop_event.is_set():
-                    self.set_description("ABORTED")
-                    break
-                yield x
-
-    def __init__(self, progress_callback, stop_event, suppress_output=False):
-        self._progress_callback = progress_callback
-        self._stop_event = stop_event
-        self._suppress_output = suppress_output
-
-    def __call__(self, iterable):
-        return ProgressBarWrapper.InternalTqdm(
-            self._progress_callback, self._stop_event, self._suppress_output, iterable
-        )
+def clip(val, minval, maxval):
+    return max(min(val, maxval), minval)
 
 
 class EngineMode(object):
     def __init__(
         self,
         vram_optimisation_level=0,
-        force_fp32=False,
+        vram_overrides={},
         enable_cuda=True,
         enable_mps=False,
+        vram_fraction=1.0,
     ):
         self._vramO = vram_optimisation_level
-        self._force_fp32 = force_fp32
+        self._overrides = vram_overrides
         self._enable_cuda = enable_cuda
         self._enable_mps = enable_mps
+        self._vram_fraction = vram_fraction
 
     @property
     def device(self):
@@ -128,23 +130,73 @@ class EngineMode(object):
 
     @property
     def attention_slice(self):
-        return self.device == "cuda" and self._vramO > 0
+        return self._overrides.get(
+            "attention_slice",
+            self.device == "cuda" and self._vramO > 0,
+        )
+
+    @property
+    def tile_vae(self):
+        return self._overrides.get(
+            "tile_vae",
+            False,
+        )
 
     @property
     def fp16(self):
-        return self.device == "cuda" and self._vramO > 1 and not self._force_fp32
+        return self._overrides.get(
+            "fp16",
+            self.device == "cuda" and self._vramO > 1,
+        )
 
     @property
-    def unet_exclusion(self):
-        return self.device == "cuda" and self._vramO > 2
+    def cfg_execution(self) -> Literal["parallel", "sequential"]:
+        return self._overrides.get(
+            "cfg_execution", "sequential" if self._vramO > 4 else "parallel"
+        )
 
     @property
-    def allexceptclip_exclusion(self):
-        return self.device == "cuda" and self._vramO > 3
+    def gpu_offload(self):
+        return self._overrides.get(
+            "gpu_offload",
+            self.device == "cuda" and self._vramO > 2,
+        )
 
     @property
-    def all_exclusion(self):
-        return self.device == "cuda" and self._vramO > 4
+    def model_vram_limit(self):
+        if not self.gpu_offload:
+            return -1
+
+        if "model_vram_limit" in self._overrides:
+            return self._overrides["model_vram_limit"]
+
+        GB = 1024 * 1024 * 1024
+
+        try:
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            vram_total = pynvml.nvmlDeviceGetMemoryInfo(handle).total
+        except:
+            vram_total = 4 * GB
+
+        vram_total = vram_total * self._vram_fraction
+
+        if self._vramO <= 3:
+            return clip(vram_total * 0.5, 2 * GB, vram_total - 2 * GB)
+        elif self._vramO <= 4:
+            return clip(3 * GB, 2 * GB, vram_total - 2 * GB)
+        else:
+            return clip(2 * GB, 2 * GB, vram_total - 2 * GB)
+
+    @property
+    def model_max_limit(self):
+        if not self.gpu_offload:
+            return -1
+
+        if "model_max_limit" in self._overrides:
+            return self._overrides["model_max_limit"]
+
+        return 1 if self._vramO >= 5 else -1
 
 
 class BatchMode:
@@ -230,261 +282,6 @@ class BatchMode:
         torch.cuda.set_per_process_memory_fraction(1.0)
 
 
-class PipelineWrapper:
-    def __init__(self, id, mode, pipeline):
-        self._id = id
-        self._mode = mode
-
-        self._pipeline = pipeline
-        self._previous = None
-
-    @property
-    def id(self):
-        return self._id
-
-    @property
-    def mode(self):
-        return self._mode
-
-    def pipeline_modules(self):
-        pipeline_module_helper = getattr(self._pipeline, "pipeline_modules", None)
-
-        if pipeline_module_helper:
-            for name, module in pipeline_module_helper():
-                yield name, module
-
-        else:
-            module_names, *_ = self._pipeline.extract_init_dict(
-                dict(self._pipeline.config)
-            )
-            for name in module_names.keys():
-                module = getattr(self._pipeline, name)
-                if isinstance(module, torch.nn.Module):
-                    yield name, module
-
-    def _delay(self, name, module):
-        return False
-
-    def activate(self, device):
-        if self._previous is not None:
-            raise Exception("Activate called without previous deactivate")
-
-        self._previous = {}
-
-        exclusion_set = GPUExclusionSet(1)
-
-        for name, module in self.pipeline_modules():
-            self._previous[name] = module
-
-            # Clone from CPU to either CUDA or Meta with a hook to move to CUDA
-            cloned = clone_model(
-                module,
-                device,
-                exclusion_set=exclusion_set if self._delay(name, module) else None,
-            )
-
-            # And set it on the pipeline
-            setattr(self._pipeline, name, cloned)
-
-    def deactivate(self):
-        if self._previous is None:
-            raise Exception("Deactivate called without previous activate")
-
-        for name, module in self.pipeline_modules():
-            setattr(self._pipeline, name, self._previous.get(name))
-
-        self._previous = None
-
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    def __call__(self, *args, **kwargs):
-        return self._pipeline(*args, **kwargs)
-
-
-class GeneratePipelineWrapper(PipelineWrapper):
-    def __init__(self, id, mode, pipeline):
-        super().__init__(id, mode, pipeline)
-
-        if self.mode.attention_slice:
-            self._pipeline.enable_attention_slicing("auto")
-            self._pipeline.enable_vae_slicing()
-        else:
-            self._pipeline.disable_attention_slicing()
-            self._pipeline.disable_vae_slicing()
-
-        self.prediction_type = getattr(
-            self._pipeline.scheduler, "prediction_type", "epsilon"
-        )
-
-        self._samplers = build_sampler_set(
-            self._pipeline.scheduler.config,
-            include_diffusers=True,
-            include_kdiffusion=True,
-        )
-
-    def _prepScheduler(self, scheduler):
-        if (
-            hasattr(scheduler.config, "steps_offset")
-            and scheduler.config.steps_offset != 1
-        ):
-            deprecation_message = (
-                f"The configuration file of this scheduler: {scheduler} is outdated. `steps_offset`"
-                f" should be set to 1 instead of {scheduler.config.steps_offset}. Please make sure "
-                "to update the config accordingly as leaving `steps_offset` might led to incorrect results"
-                " in future versions. If you have downloaded this checkpoint from the Hugging Face Hub,"
-                " it would be very nice if you could open a Pull request for the `scheduler/scheduler_config.json`"
-                " file"
-            )
-            deprecate(
-                "steps_offset!=1", "1.0.0", deprecation_message, standard_warn=False
-            )
-            new_config = dict(scheduler.config)
-            new_config["steps_offset"] = 1
-            scheduler._internal_dict = FrozenDict(new_config)
-
-        return scheduler
-
-    def _delay(self, name, module):
-        # Should we delay moving this to CUDA until forward is called?
-        if self.mode.all_exclusion:
-            return True
-        elif self.mode.allexceptclip_exclusion:
-            if not isinstance(module, CLIPModel):
-                return True
-        elif self.mode.unet_exclusion:
-            if isinstance(module, UNet2DConditionModel):
-                return True
-
-        return False
-
-    def get_samplers(self):
-        return self._samplers
-
-    def generate(
-        self,
-        # The prompt, negative_prompt, and number of images per prompt
-        prompt: UnifiedPipelinePromptType,
-        negative_prompt: Optional[UnifiedPipelinePromptType] = None,
-        num_images_per_prompt: Optional[int] = 1,
-        # The seeds - len must match len(prompt) * num_images_per_prompt if provided
-        seed: Optional[Union[int, Iterable[int]]] = None,
-        # The size - ignored if an init_image is passed
-        height: int = 512,
-        width: int = 512,
-        # Guidance control
-        guidance_scale: float = 7.5,
-        clip_guidance_scale: Optional[float] = None,
-        clip_guidance_base: Optional[str] = None,
-        # Sampler control
-        sampler: generation_pb2.DiffusionSampler = None,
-        scheduler=None,
-        eta: Optional[float] = None,
-        churn: Optional[float] = None,
-        churn_tmin: Optional[float] = None,
-        churn_tmax: Optional[float] = None,
-        sigma_min: Optional[float] = None,
-        sigma_max: Optional[float] = None,
-        karras_rho: Optional[float] = None,
-        scheduler_noise_type: Optional[SCHEDULER_NOISE_TYPE] = "normal",
-        num_inference_steps: int = 50,
-        # Providing these changes from txt2img into either img2img (no mask) or inpaint (mask) mode
-        init_image: Optional[UnifiedPipelineImageType] = None,
-        mask_image: Optional[UnifiedPipelineImageType] = None,
-        outmask_image: Optional[UnifiedPipelineImageType] = None,
-        depth_map: Optional[UnifiedPipelineImageType] = None,
-        # The strength of the img2img or inpaint process, if init_image is provided
-        strength: float = None,
-        # Lora
-        lora=None,
-        # Hires control
-        hires_fix=None,
-        hires_oos_fraction=None,
-        # Tiling control
-        tiling=False,
-        # Debug control
-        debug_latent_tags=None,
-        debug_latent_prefix="",
-        # Process control
-        progress_callback=None,
-        stop_event=None,
-        suppress_output=False,
-    ):
-        generator = None
-
-        generator_device = "cpu" if self.mode.device == "mps" else self.mode.device
-
-        if isinstance(seed, Iterable):
-            generator = [torch.Generator(generator_device).manual_seed(s) for s in seed]
-        elif seed > 0:
-            generator = torch.Generator(generator_device).manual_seed(seed)
-
-        if scheduler is None:
-            samplers = self.get_samplers()
-            if sampler is None:
-                scheduler = list(samplers.values())[0]
-            else:
-                scheduler = samplers.get(sampler, None)
-
-        if not scheduler:
-            raise NotImplementedError("Scheduler not implemented")
-
-        self._pipeline.scheduler = scheduler
-        self._pipeline.progress_bar = ProgressBarWrapper(
-            progress_callback, stop_event, suppress_output
-        )
-
-        pipeline_args = dict(
-            prompt=prompt,
-            negative_prompt=negative_prompt if negative_prompt else None,
-            num_images_per_prompt=num_images_per_prompt,
-            generator=generator,
-            width=width,
-            height=height,
-            guidance_scale=guidance_scale,
-            clip_guidance_scale=clip_guidance_scale,
-            clip_guidance_base=clip_guidance_base,
-            prediction_type=self.prediction_type,
-            eta=eta,
-            churn=churn,
-            churn_tmin=churn_tmin,
-            churn_tmax=churn_tmax,
-            sigma_min=sigma_min,
-            sigma_max=sigma_max,
-            karras_rho=karras_rho,
-            scheduler_noise_type=scheduler_noise_type,
-            num_inference_steps=num_inference_steps,
-            init_image=init_image,
-            mask_image=mask_image,
-            outmask_image=outmask_image,
-            depth_map=depth_map,
-            strength=strength,
-            lora=lora,
-            hires_fix=hires_fix,
-            hires_oos_fraction=hires_oos_fraction,
-            tiling=tiling,
-            debug_latent_tags=debug_latent_tags,
-            debug_latent_prefix=debug_latent_prefix,
-            output_type="tensor",
-            return_dict=False,
-        )
-
-        pipeline_keys = inspect.signature(self._pipeline).parameters.keys()
-        self_params = inspect.signature(self.generate).parameters
-        for k, v in list(pipeline_args.items()):
-            if k not in pipeline_keys:
-                if v != self_params[k].default:
-                    print(
-                        f"Warning: Pipeline doesn't understand argument {k} (set to {v}) - ignoring"
-                    )
-                del pipeline_args[k]
-
-        images = self._pipeline(**pipeline_args)
-
-        return images
-
-
 class ModelSet:
     def __init__(self, data: dict[str, Any] = {}) -> None:
         self.__data = {}
@@ -536,6 +333,11 @@ class ModelSet:
     def is_singular(self):
         return len(self.__data) == 1
 
+    def as_dict(self):
+        res = {}
+        res.update(self.__data)
+        return res
+
     def __len__(self):
         return len(self.__data)
 
@@ -569,6 +371,10 @@ class ModelSet:
 
 
 class EngineSpec:
+    @classmethod
+    def is_engine_spec(cls, data: dict):
+        return "id" in data or "model_id" in data
+
     def __init__(self, data: dict | None = None):
         if data is None:
             data = {}
@@ -666,6 +472,32 @@ class EngineSpec:
         return __name in self._data
 
 
+class HintsetSpec:
+    @classmethod
+    def is_hintset_spec(cls, data: dict):
+        return "hintset_id" in data
+
+    def __init__(self, data: dict | None = None):
+        if data is None:
+            data = {}
+
+        self._data = {k.lower(): v for k, v in data.items()}
+
+    def items(self):
+        for k, v in self._data.items():
+            if k != "hintset_id":
+                yield k, v
+
+    def get(self, __name: str, *args) -> Any:
+        return getattr(self, __name, *args)
+
+    def __getattr__(self, __name: str) -> Any:
+        return self._data.get(__name)
+
+    def __contains__(self, __name) -> bool:
+        return __name in self._data
+
+
 @dataclass
 class DeviceQueueSlot:
     device: torch.device
@@ -684,6 +516,84 @@ def all_same(items):
     return all(x == items[0] for x in items)
 
 
+@dataclass
+class RepoFile:
+    full: str
+    name: str
+    dtype: str | None
+    kind: str
+
+    @classmethod
+    def from_str(cls, f, **overrides):
+        *parts, dtype, kind = f.split(".")
+        if not parts:
+            parts, dtype = [dtype], None
+        kwargs = dict(name=".".join(parts), dtype=dtype, kind=kind)
+        kwargs.update(overrides)
+        return RepoFile(full=f, **kwargs)
+
+    model_kinds = {
+        "ckpt",
+        "bin",
+        "pt",
+        "pth",
+        "safetensors",
+        "msgpack",
+        "h5",
+    }
+
+
+_skip = object()
+
+
+class RepoFileSet:
+    def __init__(self, files: list[RepoFile]):
+        self.files = files
+
+    def _parse_args(self, name, dtype, kind):
+        if name is not _skip and not isinstance(name, set):
+            name = {name}
+        if dtype is not _skip and not isinstance(dtype, set):
+            dtype = {dtype}
+        if kind is not _skip and not isinstance(kind, set):
+            kind = {kind}
+
+        return name, dtype, kind
+
+    def _test(self, f, name, dtype, kind):
+        return (
+            (name is _skip or f.name in name)
+            and (dtype is _skip or f.dtype in dtype)
+            and (kind is _skip or f.kind in kind)
+        )
+
+    def _find(self, name, dtype, kind, exclusive=False):
+        return [f for f in self.files if self._test(f, name, dtype, kind) != exclusive]
+
+    def find(self, attr="name", name=_skip, dtype=_skip, kind=_skip):
+        name, dtype, kind = self._parse_args(name, dtype, kind)
+        return {getattr(f, attr) for f in self._find(name, dtype, kind)}
+
+    def remove(self, name=_skip, dtype=_skip, kind=_skip):
+        name, dtype, kind = self._parse_args(name, dtype, kind)
+        self.files = self._find(name, dtype, kind, exclusive=True)
+
+    def without(self, name=_skip, dtype=_skip, kind=_skip):
+        name, dtype, kind = self._parse_args(name, dtype, kind)
+        return RepoFileSet(self._find(name, dtype, kind, exclusive=True))
+
+    @staticmethod
+    def safetensor_equivalents(names):
+        res = set()
+        for name in names:
+            head, tail = os.path.split(name)
+            if tail == "pytorch_model":
+                tail = "model"
+
+            res.add(os.path.join(head, tail))
+        return res
+
+
 class EngineManager(object):
     def __init__(
         self,
@@ -696,7 +606,12 @@ class EngineManager(object):
         batchMode=BatchMode(),
         ram_monitor=None,
     ):
-        self.engines = [EngineSpec(engine) for engine in engines]
+        self.engines = [
+            EngineSpec(spec) for spec in engines if EngineSpec.is_engine_spec(spec)
+        ]
+        self.hintsets = [
+            HintsetSpec(spec) for spec in engines if HintsetSpec.is_hintset_spec(spec)
+        ]
         self._defaults = {}
 
         self.status: Literal["created", "loading", "ready"] = "created"
@@ -705,6 +620,8 @@ class EngineManager(object):
         self._models: dict[str, ModelSet] = {}
         # Models for each engine
         self._engine_models: dict[str, ModelSet] = {}
+        # Hintsets
+        self._hintsets: dict[str, HintManager] = {}
 
         self._activeId = None
         self._active = None
@@ -720,11 +637,18 @@ class EngineManager(object):
 
         self._ram_monitor = ram_monitor
 
-        self._device_queue = Queue()
-        self._available_pipelines: dict[str, Queue] = {}
+        # A queue that holds all available slots, so threads can take a slot off the pile
+        self._device_queue = MonitoringQueue()
+        # All device slots, whether in the queue or in use. For monitoring purposes only.
+        self._device_slots = []
+        # A set of pipelines created for a specific engine id, which are not currently allocated to a slot
+        # We may need more than one copy of a pipeline if it's being run more than once in parallel.
+        self._available_pipelines: dict[str, deque] = {}
 
         for i in range(torch.cuda.device_count()):
-            self._device_queue.put(DeviceQueueSlot(device=torch.device("cuda", i)))
+            device_queue_slot = DeviceQueueSlot(device=torch.device("cuda", i))
+            self._device_queue.put(device_queue_slot)
+            self._device_slots.append(device_queue_slot)
 
     @property
     def mode(self):
@@ -766,9 +690,22 @@ class EngineManager(object):
         if not model_path:
             raise ValueError("No remote model name was provided")
 
+        # Support providing fixed revision
+        revision = spec.revision
+
+        if revision:
+            extra_kwargs["revision"] = revision
+
+        # Handle various fp16 modes (local, never and prevent are all the same for this method)
         require_fp16 = self.mode.fp16 and spec.fp16 == "only"
         prefer_fp16 = self.mode.fp16 and spec.fp16 == "auto"
         has_fp16 = None
+
+        # In local_only mode it's very hard to determine if local weights are fp16 or not
+        # It's not used anyway, so deprecate "only" mode
+        if require_fp16:
+            logger.warn("fp16: only is deprecated. Falling back to fp16: auto")
+            prefer_fp16 = True
 
         subfolder = f"{spec.subfolder}/" if spec.subfolder else ""
 
@@ -803,87 +740,131 @@ class EngineManager(object):
             if not local_only:
                 # Get a list of files, split into path and extension
                 repo_info = None
-                if require_fp16 or prefer_fp16:
+                overrides = {}
+                if (not revision) and prefer_fp16:
                     try:
                         repo_info = huggingface_hub.model_info(
                             model_path, revision="fp16", **extra_kwargs
                         )
-                        has_fp16 = True
+                        overrides["dtype"] = "fp16"
                     except huggingface_hub.utils.RevisionNotFoundError as e:
-                        if require_fp16:
-                            raise huggingface_hub.utils.RevisionNotFoundError(
-                                f"fp16 for {spec.human_id} is set to 'only', but no fp16 available. {e}",
-                                e.response,
-                            )
+                        pass
 
                 if repo_info is None:
                     repo_info = huggingface_hub.model_info(model_path, **extra_kwargs)
-                    has_fp16 = prefer_fp16 = False
 
-                # Read out the list of files
-                repo_files = [f.rfilename for f in repo_info.siblings]
-                # Filter by any ignore / allow
-                repo_files = huggingface_hub.utils.filter_repo_objects(
-                    repo_files,
-                    ignore_patterns=ignore_patterns,
-                    allow_patterns=allow_patterns if allow_patterns else None,
+                # Read out the list of files, filtering by any ignore / allow
+                repo_files = list(
+                    huggingface_hub.utils.filter_repo_objects(
+                        [f.rfilename for f in repo_info.siblings],
+                        ignore_patterns=ignore_patterns if ignore_patterns else None,
+                        allow_patterns=allow_patterns if allow_patterns else None,
+                    )
                 )
-                # Split into path and extension tuple
-                repo_files = [os.path.splitext(f) for f in repo_files]
-                # Sort by extension (grouping fails if not correctly sorted)
-                repo_files.sort(key=lambda x: x[1])
-                # Turn into a dictionary of { extension: set_of_files }
-                grouped = {
-                    k: {f[0] for f in v}
-                    for k, v in itertools.groupby(repo_files, lambda x: x[1])
-                }
 
-                has_ckpt = ".ckpt" in grouped
-                has_bin = ".bin" in grouped
-                has_pt = ".pt" in grouped
-                has_safe = ".safetensors" in grouped
+                # Convert strings into RepoFile objects
+                repo_file_details = [
+                    RepoFile.from_str(f, **overrides) for f in repo_files if "." in f
+                ]
 
-                # Now decide which we will use
-                use = None
+                # And then collect the ones that look like models in a set
+                model_files = RepoFileSet(
+                    [f for f in repo_file_details if f.kind in RepoFile.model_kinds]
+                )
 
-                extensions = {"ckpt", "bin", "pt", "safetensors", "msgpack", "h5"}
+                # We need to figure out what files to download. Make these assumptions:
+                # - Any .safetensors that match some other .model (ignoring dtype) are the same underlying type
+                # - If we don't have a clear type (diffusers or ckpt), we have to include all safetensors
 
-                if spec.safe_only:
-                    use = "safetensors"
-                elif has_bin:
-                    if has_safe and is_safetensors_compatible(repo_info):
-                        use = "safetensors"
-                        if has_ckpt:
-                            # Explictly don't include any safetensors that match ckpt files
-                            ignore_patterns += [
-                                f"{file}.safetensors"
-                                for file in (grouped[".ckpt"] & grouped[".safetensors"])
-                            ]
+                # What kinds of model exist?
+                has = {k: k in model_files.find("kind") for k in RepoFile.model_kinds}
+
+                # If we have bin, pt or pth files, remove any safetensors that match ckpts
+                # to make future logic easier
+
+                if has["bin"] or has["pt"] or has["pth"]:
+                    test_files = model_files.without(name=model_files.find(kind="ckpt"))
+                else:
+                    test_files = model_files
+
+                # Pick the kind and specific (bare) names
+                kind = names = None
+
+                # 1st choice: bin (or even better, safetensors that match bin)
+                if has["bin"]:
+                    names = test_files.find(kind="bin")
+                    equivalents = RepoFileSet.safetensor_equivalents(names)
+                    safetensors = test_files.find(kind="safetensors")
+
+                    if equivalents - safetensors:
+                        logger.debug(
+                            f"Diffusers models were missing some safetensors ({equivalents - safetensors})"
+                        )
+                        kind = "bin"
                     else:
-                        use = "bin"
-                elif has_safe:
-                    use = "safetensors"
-                elif has_pt:
-                    use = "pt"
-                elif has_ckpt:
-                    use = "ckpt"
+                        names = equivalents
+                        kind = "safetensors"
+                # 2nd choice: safetensors
+                elif has["safetensors"]:
+                    names = test_files.find(kind="safetensors")
+                    kind = "safetensors"
+                # 3rd choice, ".pt" or ".pth"
+                elif has["pt"]:
+                    names = test_files.find(kind="pt")
+                    kind = "pt"
+                elif has["pth"]:
+                    names = test_files.find(kind="pth")
+                    kind = "pth"
+                # 4th choice: ckpt (or safetensors that match if possible)
+                elif has["ckpt"]:
+                    names = test_files.find(kind="ckpt")
+                    safetensors = test_files.find(kind="safetensors")
+
+                    if names - safetensors:
+                        logger.debug(
+                            f"Checkpoints were some safetensors ({names - safetensors})"
+                        )
+                        kind = "ckpt"
+                    else:
+                        kind = "safetensors"
+
                 else:
                     raise EnvironmentError(
                         "Repo {model_path} doesn't appear to contain any model files."
                     )
 
+                if spec.safe_only and kind != "safetensors":
+                    raise RuntimeError(
+                        "spec.safe_only set, but couldn't find appropriate safetensors files"
+                    )
+
+                if prefer_fp16:
+                    if names - model_files.find(name=names, dtype="fp16", kind=kind):
+                        has_fp16 = prefer_fp16 = False
+                    else:
+                        has_fp16 = True
+
+                logger.debug(
+                    f"Model chosen {kind}{', fp16' if has_fp16 else ''}, names: {names}"
+                )
+
+                chosen = [
+                    model_files.find(
+                        "full", name=name, dtype="fp16" if has_fp16 else None, kind=kind
+                    ).pop()
+                    for name in names
+                ]
+
                 ignore_patterns += [
-                    f"{subfolder}*.{extension}"
-                    for extension in extensions
-                    if extension != use
+                    f for f in model_files.find("full") if f not in chosen
                 ]
 
                 if ignore_patterns:
                     extra_kwargs["ignore_patterns"] = ignore_patterns
-                if subfolder:
+                if allow_patterns:
                     extra_kwargs["allow_patterns"] = allow_patterns
 
-            if require_fp16 or prefer_fp16:
+            if (not revision) and prefer_fp16:
                 try:
                     base = huggingface_hub.snapshot_download(
                         model_path,
@@ -897,14 +878,7 @@ class EngineManager(object):
                     FileNotFoundError,
                     huggingface_hub.utils.RevisionNotFoundError,
                 ):
-                    if has_fp16 is True:
-                        raise RuntimeError(
-                            "HuggingFace reported FP16 model is available on query, but failed to provide it on download."
-                        )
-                    if require_fp16:
-                        raise RuntimeError(
-                            f"fp16 for {spec.human_id} is set to 'only', but no fp16 available."
-                        )
+                    pass
 
             base = huggingface_hub.snapshot_download(
                 model_path,
@@ -912,6 +886,7 @@ class EngineManager(object):
                 local_files_only=local_only,
                 **extra_kwargs,
             )
+
             return os.path.join(base, subfolder) if subfolder else base
 
         except Exception as e:
@@ -942,8 +917,12 @@ class EngineManager(object):
 
         return self._get_hf_path(spec, local_only=False)
 
+    def _get_civitai_path(self, spec: EngineSpec, local_only=True):
+        ref = civitai.parse_url(spec.model)
+        return civitai.get_model(ref, local_only=local_only)
+
     def _get_url_path(self, spec: EngineSpec, local_only=True):
-        urls = spec.urls
+        urls = spec.model or spec.urls
 
         if not urls:
             raise ValueError("No URL was provided")
@@ -1012,27 +991,31 @@ class EngineManager(object):
             )
         )
 
-        # 1st: If this model should explicitly be refreshed, try refreshing from...
-        if matches_refresh:
-            # HuggingFace
-            add_candidate(self._get_hf_path, local_only=False)
-            # Or an explicit URL
-            add_candidate(self._get_url_path, local_only=False)
+        if not model_path:
+            model_source = None
+        elif model_path.startswith("https://civitai.com"):
+            model_source = self._get_civitai_path
+        elif model_path.startswith("https://"):
+            model_source = self._get_url_path
+        else:
+            model_source = self._get_hf_path
+
+        # 1st: If this model should explicitly be refreshed, try refreshing from URL...
+        if model_source and matches_refresh:
+            add_candidate(model_source, local_only=False)
         # 2nd: If we're in fp16 mode, try loading the fp16-specific local model
         if self.mode.fp16 and spec.fp16 not in {"never", "prevent"}:
             add_candidate(self._get_local_path, fp16=True)
         # 3rd: Try loading the general local model
         if not (self.mode.fp16 and spec.fp16 == "only"):
             add_candidate(self._get_local_path, fp16=False)
-        # 4th: Try loading from the existing HuggingFace cache
-        add_candidate(self._get_hf_path, local_only=True)
-        # 5th: Try loading from an already-downloaded explicit URL
-        add_candidate(self._get_url_path, local_only=True)
-        # 6th: If this model wasn't explicitly flagged to be refreshed, try anyway
-        if not matches_refresh:
-            add_candidate(self._get_hf_path, local_only=False)
-            add_candidate(self._get_url_path, local_only=False)
-        # 7th: If configured so, try a forced empty-cache-and-reload from HuggingFace
+        # 4th: Try loading from the existing cache
+        if model_source:
+            add_candidate(model_source, local_only=True)
+        # 5th: If this model wasn't explicitly flagged to be refreshed, try anyway
+        if model_source and not matches_refresh:
+            add_candidate(model_source, local_only=False)
+        # 6th: If configured so, try a forced empty-cache-and-reload from HuggingFace
         if self._refresh_on_error:
             add_candidate(self._get_hf_forced_path)
 
@@ -1082,13 +1065,105 @@ class EngineManager(object):
 
         return class_obj
 
+    def _load_module_fallback(
+        self,
+        path,
+        class_obj,
+        torch_dtype="auto",
+        low_cpu_mem_usage=False,
+        allow_patterns=[],
+        ignore_patterns=[],
+        **config,
+    ):
+        paths = []
+        for pattern in ["*.safetensors", "*.pt", "*.pth"]:
+            paths += glob.glob(pattern, root_dir=path)
+
+        paths = list(
+            huggingface_hub.utils.filter_repo_objects(
+                paths,
+                allow_patterns=allow_patterns,
+                ignore_patterns=ignore_patterns,
+            )
+        )
+
+        if not paths:
+            raise RuntimeError(f"No model found for {class_obj.__name__} at {path}")
+        elif len(paths) > 1:
+            raise RuntimeError(
+                f"Too many posible models found for {class_obj.__name__} at {path}. "
+                "Try adding an allow_patterns or ignore_patterns to your model spec."
+            )
+
+        model_path = os.path.join(path, paths[0])
+
+        adapter = class_obj(**config)
+        if model_path.endswith(".safetensors"):
+            state_dict = safetensors.torch.load_file(model_path)
+        else:
+            state_dict = torch.load(model_path, pickle_module=torch_safe_unpickler)
+
+        adapter.load_state_dict(state_dict)
+
+        if torch_dtype != "auto":
+            adapter.to(torch_dtype)
+
+        adapter.eval()
+        return adapter
+
+    def _parse_class_details(self, fqclass_name):
+        factory_name = None
+        args = {}
+
+        if fqclass_name:
+            if isinstance(fqclass_name, str):
+                base_name = fqclass_name
+            else:
+                base_name = fqclass_name[1]
+
+            # Extract out any arguments in the class name
+            if base_name.endswith(")"):
+                base_name, argstr = base_name.split("(", 1)
+                argstr = argstr[:-1]
+
+                args = yaml.load(
+                    "{" + argstr.replace("=", ": ") + "}", Loader=yaml.SafeLoader
+                )
+                args = {k: None if v == "None" else v for k, v in args.items()}
+
+            # Extract out any loader method override in the class name (must be classmethod)
+            if "/" in base_name:
+                base_name, factory_name = base_name.split("/", 1)
+
+            if isinstance(fqclass_name, str):
+                fqclass_name = base_name
+            else:
+                fqclass_name = (fqclass_name[0], base_name)
+
+        return fqclass_name, factory_name, args
+
     def _load_model_from_weights(
         self,
         weight_path: str,
         name: str,
         fqclass_name: str | tuple[str, str] | None = None,
+        local_only: bool = False,
         fp16: bool | None = None,
+        ignore_patterns=None,
+        allow_patterns=None,
     ):
+        assert "/" not in name
+
+        def subclass_check(obj, classtype):
+            if type(obj) is not type:
+                return False
+            return issubclass(obj, classtype)
+
+        fqclass_name, factory_name, args = self._parse_class_details(fqclass_name)
+        load_method_names = (
+            [factory_name] if factory_name else ["from_pretrained", "from_config"]
+        )
+
         if fqclass_name is None:
             fqclass_name = TYPE_CLASSES.get(name, None)
 
@@ -1102,32 +1177,82 @@ class EngineManager(object):
 
         class_obj = self._import_class(fqclass_name)
 
-        load_method_names = ["from_pretrained", "from_config"]
         load_candidates = [getattr(class_obj, name, None) for name in load_method_names]
-        load_method = [m for m in load_candidates if m is not None][0]
+        load_candidates = [m for m in load_candidates if m is not None]
 
-        loading_kwargs = {}
+        load_method = None
+        loading_kwargs = args or {}
 
-        if fp16 and issubclass(class_obj, torch.nn.Module):
+        if load_candidates:
+            load_method = load_candidates[0]
+        else:
+            load_method = self._load_module_fallback
+            loading_kwargs["class_obj"] = class_obj
+
+        if not load_method:
+            raise RuntimeError(f"No load method found for model {class_obj.__name__}")
+
+        init_params = inspect.signature(load_method).parameters
+
+        if fp16 and (
+            subclass_check(class_obj, torch.nn.Module) or "torch_dtype" in init_params
+        ):
             loading_kwargs["torch_dtype"] = torch.float16
 
-        is_diffusers_model = issubclass(class_obj, ModelMixin)
-        is_transformers_model = issubclass(class_obj, PreTrainedModel)
+        is_diffusers_model = subclass_check(class_obj, ModelMixin)
+        is_transformers_model = subclass_check(class_obj, PreTrainedModel)
 
-        if is_diffusers_model or is_transformers_model:
+        accepts_low_cpu_mem_usage = (
+            is_diffusers_model
+            or is_transformers_model
+            or "low_cpu_mem_usage" in init_params
+        )
+        accepts_variant = is_diffusers_model or "variant" in init_params
+
+        if accepts_low_cpu_mem_usage:
             loading_kwargs["low_cpu_mem_usage"] = True
+        if "ignore_patterns" in init_params:
+            loading_kwargs["ignore_patterns"] = ignore_patterns
+        if "allow_patterns" in init_params:
+            loading_kwargs["allow_patterns"] = allow_patterns
 
         # check if the module is in a subdirectory
         sub_path = os.path.join(weight_path, name)
         if os.path.isdir(sub_path):
             weight_path = sub_path
 
-        model = load_method(weight_path, **loading_kwargs)
+        # We can't _know_ if the fp16 variant is loadable without checking the
+        # full model details online. So just _try_ and fall back to trying without variant
+
+        # This is _SO DUMB_ - some models call set_default_dtype, but don't properly
+        # wrap that in a try / finally to restore the original dtype
+        default_dtype = torch.get_default_dtype()
+
+        model = variant_exception = None
+        if accepts_variant and fp16:
+            try:
+                model = load_method(weight_path, variant="fp16", **loading_kwargs)
+            except Exception as e:
+                variant_exception = e
+            finally:
+                torch.set_default_dtype(default_dtype)
+
+        if model is None:
+            try:
+                model = load_method(weight_path, **loading_kwargs)
+            except Exception as e:
+                if variant_exception is not None:
+                    raise e from variant_exception
+                else:
+                    raise e
+            finally:
+                torch.set_default_dtype(default_dtype)
+
         model._source = weight_path
         return model
 
     def _load_modelset_from_weights(
-        self, weight_path, whitelist=None, blacklist=None, fp16=None
+        self, weight_path, whitelist=None, blacklist=None, **kwargs
     ):
         config_dict = DiffusionPipeline.load_config(weight_path, local_files_only=True)
 
@@ -1163,7 +1288,7 @@ class EngineManager(object):
                     continue
 
             pipeline[name] = self._load_model_from_weights(
-                weight_path, name, fqclass_name, fp16=fp16
+                weight_path, name, fqclass_name, **kwargs
             )
 
         return ModelSet(pipeline)
@@ -1197,6 +1322,12 @@ class EngineManager(object):
         result = {}
 
         for key in thetas[0].keys():
+            # Special case for position IDs
+            if key == "text_model.embeddings.position_ids":
+                base = thetas[0][key]
+                result[key] = torch.arange(0, base.shape[1]).unsqueeze(0).to(base)
+                continue
+
             tomix = [theta[key] for theta in thetas]
             shapes = [tensor.shape for tensor in tomix]
 
@@ -1317,6 +1448,7 @@ class EngineManager(object):
         ckpt_config,
         whitelist=None,
         blacklist=None,
+        local_only=False,
         fp16=None,
         ignore_patterns=None,
         allow_patterns=None,
@@ -1359,14 +1491,15 @@ class EngineManager(object):
                     f"Folder contained {len(ckpt_paths)} .ckpt files, there must be at most one."
                 )
 
-            extra_kwargs["ckpt_path"] = os.path.join(weight_path, ckpt_paths[0])
+            extra_kwargs["checkpoint_path"] = os.path.join(weight_path, ckpt_paths[0])
 
         else:
             raise EnvironmentError(
                 f"Folder did not contain a .safetensors or .ckpt file."
             )
 
-        models = ckpt_utils.load_as_models(ckpt_config, **extra_kwargs)
+        with ckpt_utils.local_only(local_only):
+            models = ckpt_utils.load_as_models(ckpt_config, **extra_kwargs)
 
         for model in models.values():
             model._source = (
@@ -1375,8 +1508,17 @@ class EngineManager(object):
 
         return ModelSet(models)
 
-    def _load_from_weights(self, spec: EngineSpec, weight_path: str) -> ModelSet:
+    def _load_from_weights(
+        self, spec: EngineSpec, weight_path: str, local_only=False
+    ) -> ModelSet:
         fp16 = False if spec.fp16 == "prevent" else None
+
+        kwargs = dict(
+            local_only=local_only,
+            fp16=fp16,
+            ignore_patterns=spec.ignore_patterns,
+            allow_patterns=spec.allow_patterns,
+        )
 
         # A pipeline has a top-level json file that describes a set of models
         if spec.type == "pipeline":
@@ -1384,7 +1526,7 @@ class EngineManager(object):
                 weight_path,
                 whitelist=spec.whitelist,
                 blacklist=spec.blacklist,
-                fp16=fp16,
+                **kwargs,
             )
         elif spec.type.startswith("ckpt/"):
             ckpt_config = spec.type[len("ckpt/") :]
@@ -1393,19 +1535,17 @@ class EngineManager(object):
                 ckpt_config,
                 whitelist=spec.whitelist,
                 blacklist=spec.blacklist,
-                fp16=fp16,
-                ignore_patterns=spec.ignore_patterns,
-                allow_patterns=spec.allow_patterns,
+                **kwargs,
             )
         # `clip` type is a special case that loads the same weights into two different models
         elif spec.type == "clip":
             models = ModelSet(
                 {
                     "clip_model": self._load_model_from_weights(
-                        weight_path, "clip_model", fp16=fp16
+                        weight_path, "clip_model", **kwargs
                     ),
                     "feature_extractor": self._load_model_from_weights(
-                        weight_path, "feature_extractor", fp16=fp16
+                        weight_path, "feature_extractor", **kwargs
                     ),
                 }
             )
@@ -1414,7 +1554,7 @@ class EngineManager(object):
             models = ModelSet(
                 {
                     spec.type: self._load_model_from_weights(
-                        weight_path, spec.type, spec.class_name, fp16=fp16
+                        weight_path, spec.type, spec.class_name, **kwargs
                     )
                 }
             )
@@ -1426,19 +1566,24 @@ class EngineManager(object):
 
         failures = []
 
+        def exception_to_str(e):
+            return "".join(traceback.format_exception(e)) if IS_DEV else str(e)
+
         for callback, args, kwargs in candidates:
             weight_path = None
             try:
                 weight_path = callback(spec, *args, **kwargs)
-                return self._load_from_weights(spec, weight_path)
+                return self._load_from_weights(
+                    spec, weight_path, local_only=kwargs.get("local_only")
+                )
             except ValueError as e:
-                if str(e) not in failures:
-                    failures.append(str(e))
+                if (message := exception_to_str(e)) not in failures:
+                    failures.append(message)
             except Exception as e:
                 if weight_path:
                     errstr = (
                         f"Error when trying to load weights from {weight_path}. "
-                        + str(e)
+                        + exception_to_str(e)
                     )
                     if errstr not in failures:
                         failures.append(errstr)
@@ -1539,24 +1684,40 @@ class EngineManager(object):
 
         return model
 
-    def _instantiate_pipeline(self, engine, model, extra_kwargs):
-        fqclass_name = engine.get("class", "UnifiedPipeline")
-        class_obj = self._import_class(fqclass_name)
+    def _inspect_kwargs(self, callable):
+        class_init_params = inspect.signature(callable).parameters
+        regular_params = {
+            k: v
+            for k, v in class_init_params.items()
+            if (v.kind is v.POSITIONAL_OR_KEYWORD or v.kind is v.KEYWORD_ONLY)
+            and k != "self"
+        }
 
-        available = set(model.keys())
+        takes_kwargs = any(
+            [p.kind is p.VAR_KEYWORD for p in class_init_params.values()]
+        )
 
-        class_init_params = inspect.signature(class_obj.__init__).parameters
-        expected = set(class_init_params.keys()) - set(["self"])
+        expected = set(regular_params.keys())
 
         required = set(
             [
                 name
-                for name, param in class_init_params.items()
+                for name, param in regular_params.items()
                 if param.default is inspect._empty
-                and name != "self"
-                and name != "safety_checker"
             ]
         )
+
+        return expected, required, takes_kwargs
+
+    def _instantiate_pipeline(self, engine, model, extra_kwargs):
+        fqclass_name = engine.get("class", "UnifiedPipeline")
+        fqclass_name, factory_name, args = self._parse_class_details(fqclass_name)
+        class_obj = self._import_class(fqclass_name)
+
+        available = set(model.keys())
+
+        expected, required, takes_kwargs = self._inspect_kwargs(class_obj.__init__)
+        required = required - {"safety_checker"} - args.keys()
 
         if required - available:
             raise EnvironmentError(
@@ -1564,7 +1725,10 @@ class EngineManager(object):
                 + repr(required - available)
             )
 
-        modules = {k: clone_model(model[k]) for k in expected & available}
+        modules = {
+            k: clone_model(model[k])
+            for k in (available if takes_kwargs else expected & available)
+        }
 
         if "safety_checker" in expected and "safety_checker" not in available:
             modules["safety_checker"] = None
@@ -1575,8 +1739,31 @@ class EngineManager(object):
             for n, m in modules.items():
                 print(f"{n.rjust(max_len, ' ')} | {'None' if m is None else m._source}")
 
-        modules = {**modules, **extra_kwargs}
+        if "hintset_manager" in expected and engine.hintset:
+            extra_kwargs["hintset_manager"] = self._hintsets[engine.hintset]
+
+        modules = {**args, **modules, **extra_kwargs}
         return class_obj(**modules)
+
+    def _instantiate_wrapper(self, spec, pipeline, model):
+        meta = pipeline_meta.get_meta(pipeline)
+
+        if wrap_class_name := meta.get("wrapper"):
+            wrap_class = self._import_class(wrap_class_name)
+        elif isinstance(pipeline, DiffusionPipeline):
+            wrap_class = DiffusionPipelineWrapper
+        else:
+            wrap_class = PipelineWrapper
+
+        expected, required, takes_kwargs = self._inspect_kwargs(wrap_class.__init__)
+        required = required - {"id", "mode", "pipeline"}
+
+        modules = {
+            k: clone_model(model[k])
+            for k in (model.keys() if takes_kwargs else expected & model.keys())
+        }
+
+        return wrap_class(id=spec.id, mode=self._mode, pipeline=pipeline, **modules)
 
     def _build_pipeline_for_engine(self, spec: EngineSpec):
         model = self._engine_models.get(spec.id)
@@ -1593,16 +1780,48 @@ class EngineManager(object):
                     f"Engine {spec.id} has options, but created pipeline rejected them"
                 )
 
-        if spec.task == "generate":
-            wrap_class = GeneratePipelineWrapper
-        else:
-            wrap_class = PipelineWrapper
+        return self._instantiate_wrapper(spec, pipeline, model)
 
-        return wrap_class(id=spec.id, mode=self._mode, pipeline=pipeline)
+    def _build_hintset(self, hintset_id, whitelist="*", with_models=True):
+        if isinstance(whitelist, str):
+            whitelist = [whitelist]
+
+        hintset_spec = self._find_hintset_spec(hintset_id)
+        if not hintset_spec:
+            raise EnvironmentError(f"Hintset {hintset_id} not defined anywhere")
+
+        result = {}
+        for name, handler in hintset_spec.items():
+            if name.startswith("@"):
+                subhintset = self._build_hintset(
+                    name[1:], whitelist=handler, with_models=with_models
+                )
+                result.update(subhintset)
+
+            else:
+                whitelisted = any((fnmatch(name, pattern) for pattern in whitelist))
+                if not whitelisted:
+                    continue
+
+                spec = EngineSpec({"model": handler["model"]})
+
+                aliases = handler.get("aliases", [])
+                if isinstance(aliases, str):
+                    aliases = [aliases]
+
+                result[name] = dict(
+                    name=name,
+                    models=self._load_model(spec).as_dict() if with_models else None,
+                    types=[name] + aliases,
+                    priority=handler.get("priority", 100),
+                )
+
+        return result
 
     def loadPipelines(self):
 
         logger.info("Loading engines...")
+        self.status = "loading"
 
         for engine in self.engines:
             if not engine.enabled:
@@ -1619,6 +1838,15 @@ class EngineManager(object):
             logger.info(f"  - Engine {engineid}...")
 
             self._engine_models[engineid] = self._load_model(engine)
+
+            if engine.hintset and engine.hintset not in self._hintsets:
+                hintset_id = engine.hintset
+                logger.info(f"  - Hintset {hintset_id}...")
+
+                self._hintsets[hintset_id] = hintset_manager = HintsetManager()
+
+                for handler in self._build_hintset(hintset_id).values():
+                    hintset_manager.add_hint_handler(**handler)
 
         if self.batchMode.autodetect:
             self.batchMode.run_autodetect(self)
@@ -1736,6 +1964,13 @@ class EngineManager(object):
 
         return None
 
+    def _find_hintset_spec(self, hintset_id) -> HintsetSpec | None:
+        for hintset in self.hintsets:
+            if hintset.hintset_id == hintset_id:
+                return hintset
+
+        return None
+
     def save_models_as_safetensor(self, patterns):
         specs = self._find_specs(model_id=patterns)
 
@@ -1806,6 +2041,9 @@ class EngineManager(object):
             if engine.enabled and engine.is_engine
         }
 
+    def getStatusByID(self, engine_id):
+        return engine_id in self._engine_models
+
     def _return_pipeline_to_pool(self, slot):
         assert slot.pipeline, "No pipeline to return to pool"
 
@@ -1817,8 +2055,8 @@ class EngineManager(object):
         slot.pipeline = None
 
         # Return it to the pool (creating a pool if needed)
-        pool = self._available_pipelines.setdefault(pipeline.id, Queue())
-        pool.put(pipeline)
+        pool = self._available_pipelines.setdefault(pipeline.id, deque())
+        pool.append(pipeline)
 
     def _get_pipeline_from_pool(self, slot, id):
         assert not slot.pipeline, "Cannot allocate pipeline to full device slot"
@@ -1830,8 +2068,8 @@ class EngineManager(object):
 
         # Try getting a pipeline from the pool. Again, if none available, just return
         try:
-            pipeline = pool.get(block=False)
-        except queue.Empty:
+            pipeline = pool.pop()
+        except IndexError:
             return None
 
         # Assign the pipeline to the slot and activate
@@ -1864,34 +2102,36 @@ class EngineManager(object):
         # Get device queue slot
         slot = self._device_queue.get()
 
-        # Get pipeline (create if all pipelines for the id are busy)
-
-        # If a pipeline is already active on this device slot, check if it's the right
-        # one. If not, deactivate it and clear it
-        if slot.pipeline and slot.pipeline.id != id:
-            old_id = slot.pipeline.id
-            self._return_pipeline_to_pool(slot)
-
-            if self._ram_monitor:
-                print(f"Existing pipeline {old_id} deactivated")
-                self._ram_monitor.print()
-
-        # If there's no pipeline on this device slot yet, find it (creating it
-        # if all the existing pipelines are busy)
-        if not slot.pipeline:
-            existing = True
-            self._get_pipeline_from_pool(slot, id)
-
-            if not slot.pipeline:
-                existing = False
-                slot.pipeline = self._build_pipeline_for_engine(spec)
-                slot.pipeline.activate(slot.device)
-
-            if self._ram_monitor:
-                print(f"{'Existing' if existing else 'New'} pipeline {id} activated")
-                self._ram_monitor.print()
-
         try:
+            # Get pipeline (create if all pipelines for the id are busy)
+
+            # If a pipeline is already active on this device slot, check if it's the right
+            # one. If not, deactivate it and clear it
+            if slot.pipeline and slot.pipeline.id != id:
+                old_id = slot.pipeline.id
+                self._return_pipeline_to_pool(slot)
+
+                if self._ram_monitor:
+                    print(f"Existing pipeline {old_id} deactivated")
+                    self._ram_monitor.print()
+
+            # If there's no pipeline on this device slot yet, find it (creating it
+            # if all the existing pipelines are busy)
+            if not slot.pipeline:
+                existing = True
+                self._get_pipeline_from_pool(slot, id)
+
+                if not slot.pipeline:
+                    existing = False
+                    slot.pipeline = self._build_pipeline_for_engine(spec)
+                    slot.pipeline.activate(slot.device)
+
+                if self._ram_monitor:
+                    print(
+                        f"{'Existing' if existing else 'New'} pipeline {id} activated"
+                    )
+                    self._ram_monitor.print()
+
             # Do the work
             yield slot.pipeline
         finally:

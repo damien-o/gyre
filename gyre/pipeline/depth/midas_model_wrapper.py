@@ -5,16 +5,9 @@ import threading
 from copy import deepcopy
 
 import torch
-from transformers.modeling_utils import get_parameter_device, get_parameter_dtype
-
-gyre_path = __file__
-while gyre_path and os.path.split(gyre_path)[1] != "gyre":
-    gyre_path = os.path.dirname(gyre_path)
-
-sys.path.append(os.path.join(gyre_path, "src", "midas"))
-
 from midas.backbones.utils import activations
 from midas.model_loader import default_models, load_model
+from transformers.modeling_utils import get_parameter_device, get_parameter_dtype
 
 # MiDaS library has global shared state. Need to ensure only one thread at a time inferences
 global_midas_lock = threading.Lock()
@@ -89,5 +82,5 @@ class MidasModelWrapper(torch.nn.Module):
         model, transform, _, _ = load_model("cpu", model_path, model_type, False)
 
         result = cls(model, transform)
-        result.to(dtype)
+        # result.to(dtype)
         return result

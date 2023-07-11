@@ -58,6 +58,10 @@ class _ArtifactTypeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._E
     ARTIFACT_TENSOR: _ArtifactType.ValueType  # 9
     ARTIFACT_LORA: _ArtifactType.ValueType  # 500
     ARTIFACT_DEPTH: _ArtifactType.ValueType  # 501
+    """Deprecated - use HINT_IMAGE with an image control type of "depth" instead"""
+    ARTIFACT_TOKEN_EMBEDDING: _ArtifactType.ValueType  # 502
+    ARTIFACT_HINT_IMAGE: _ArtifactType.ValueType  # 503
+    """Controlnet or T2I input image"""
 
 class ArtifactType(_ArtifactType, metaclass=_ArtifactTypeEnumTypeWrapper): ...
 
@@ -73,6 +77,10 @@ ARTIFACT_LATENT: ArtifactType.ValueType  # 8
 ARTIFACT_TENSOR: ArtifactType.ValueType  # 9
 ARTIFACT_LORA: ArtifactType.ValueType  # 500
 ARTIFACT_DEPTH: ArtifactType.ValueType  # 501
+"""Deprecated - use HINT_IMAGE with an image control type of "depth" instead"""
+ARTIFACT_TOKEN_EMBEDDING: ArtifactType.ValueType  # 502
+ARTIFACT_HINT_IMAGE: ArtifactType.ValueType  # 503
+"""Controlnet or T2I input image"""
 global___ArtifactType = ArtifactType
 
 class _GaussianDirection:
@@ -146,6 +154,33 @@ RESCALE_CONTAIN_REFLECT: RescaleMode.ValueType  # 5
 """Fit the complete source image into the rescale height and width, maintaining aspect ratio, background to be filled with the image mirrored"""
 global___RescaleMode = RescaleMode
 
+class _BackgroundRemovalMode:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _BackgroundRemovalModeEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_BackgroundRemovalMode.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    ALPHA: _BackgroundRemovalMode.ValueType  # 0
+    """Apply to alpha channel"""
+    SOLID: _BackgroundRemovalMode.ValueType  # 1
+    """Matte over a solid color"""
+    BLUR: _BackgroundRemovalMode.ValueType  # 2
+    """Matte over a blurred version of the input"""
+    NOTHING: _BackgroundRemovalMode.ValueType  # 3
+    """Don't do anything, just remember it for later"""
+
+class BackgroundRemovalMode(_BackgroundRemovalMode, metaclass=_BackgroundRemovalModeEnumTypeWrapper): ...
+
+ALPHA: BackgroundRemovalMode.ValueType  # 0
+"""Apply to alpha channel"""
+SOLID: BackgroundRemovalMode.ValueType  # 1
+"""Matte over a solid color"""
+BLUR: BackgroundRemovalMode.ValueType  # 2
+"""Matte over a blurred version of the input"""
+NOTHING: BackgroundRemovalMode.ValueType  # 3
+"""Don't do anything, just remember it for later"""
+global___BackgroundRemovalMode = BackgroundRemovalMode
+
 class _ArtifactStage:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -195,6 +230,23 @@ TEXT_ENCODER: WeightMethod.ValueType  # 0
 CROSS_ATTENTION: WeightMethod.ValueType  # 1
 global___WeightMethod = WeightMethod
 
+class _HintPriority:
+    ValueType = typing.NewType("ValueType", builtins.int)
+    V: typing_extensions.TypeAlias = ValueType
+
+class _HintPriorityEnumTypeWrapper(google.protobuf.internal.enum_type_wrapper._EnumTypeWrapper[_HintPriority.ValueType], builtins.type):
+    DESCRIPTOR: google.protobuf.descriptor.EnumDescriptor
+    HINT_BALANCED: _HintPriority.ValueType  # 0
+    HINT_PRIORITISE_PROMPT: _HintPriority.ValueType  # 1
+    HINT_PRIORITISE_HINT: _HintPriority.ValueType  # 2
+
+class HintPriority(_HintPriority, metaclass=_HintPriorityEnumTypeWrapper): ...
+
+HINT_BALANCED: HintPriority.ValueType  # 0
+HINT_PRIORITISE_PROMPT: HintPriority.ValueType  # 1
+HINT_PRIORITISE_HINT: HintPriority.ValueType  # 2
+global___HintPriority = HintPriority
+
 class _DiffusionSampler:
     ValueType = typing.NewType("ValueType", builtins.int)
     V: typing_extensions.TypeAlias = ValueType
@@ -218,11 +270,9 @@ class _DiffusionSamplerEnumTypeWrapper(google.protobuf.internal.enum_type_wrappe
     SAMPLER_DPM_FAST: _DiffusionSampler.ValueType  # 550
     SAMPLER_DPM_ADAPTIVE: _DiffusionSampler.ValueType  # 551
     SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: _DiffusionSampler.ValueType  # 552
-    """Deprecated - use the official value above"""
+    """Next three deprecated - use the official values above"""
     SAMPLER_DPMSOLVERPP_SDE: _DiffusionSampler.ValueType  # 553
-    """Deprecated - use the official value above"""
     SAMPLER_DPMSOLVERPP_2M: _DiffusionSampler.ValueType  # 554
-    """Deprecated - use the official value above"""
 
 class DiffusionSampler(_DiffusionSampler, metaclass=_DiffusionSamplerEnumTypeWrapper):
     """DiffusionSampler identifies which sampler to use for Diffusion, and represents
@@ -246,11 +296,9 @@ SAMPLER_DPMSOLVERPP_3ORDER: DiffusionSampler.ValueType  # 502
 SAMPLER_DPM_FAST: DiffusionSampler.ValueType  # 550
 SAMPLER_DPM_ADAPTIVE: DiffusionSampler.ValueType  # 551
 SAMPLER_DPMSOLVERPP_2S_ANCESTRAL: DiffusionSampler.ValueType  # 552
-"""Deprecated - use the official value above"""
+"""Next three deprecated - use the official values above"""
 SAMPLER_DPMSOLVERPP_SDE: DiffusionSampler.ValueType  # 553
-"""Deprecated - use the official value above"""
 SAMPLER_DPMSOLVERPP_2M: DiffusionSampler.ValueType  # 554
-"""Deprecated - use the official value above"""
 global___DiffusionSampler = DiffusionSampler
 
 class _SamplerNoiseType:
@@ -585,6 +633,8 @@ global___ImageAdjustment_Channels = ImageAdjustment_Channels
 
 @typing_extensions.final
 class ImageAdjustment_Rescale(google.protobuf.message.Message):
+    """Resize the image. The mode specifies what will happen if the aspect ratio"""
+
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
     HEIGHT_FIELD_NUMBER: builtins.int
@@ -607,6 +657,37 @@ class ImageAdjustment_Rescale(google.protobuf.message.Message):
     def ClearField(self, field_name: typing_extensions.Literal["algorithm_hint", b"algorithm_hint", "height", b"height", "mode", b"mode", "width", b"width"]) -> None: ...
 
 global___ImageAdjustment_Rescale = ImageAdjustment_Rescale
+
+@typing_extensions.final
+class ImageAdjustment_Autoscale(google.protobuf.message.Message):
+    """Resize the image in a more clever way. 
+    If either width or height are missing, will calculate the right value to maintain aspect ratio
+    If both are missing, will use the target size of the generation
+    """
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    HEIGHT_FIELD_NUMBER: builtins.int
+    WIDTH_FIELD_NUMBER: builtins.int
+    MODE_FIELD_NUMBER: builtins.int
+    height: builtins.int
+    width: builtins.int
+    mode: global___RescaleMode.ValueType
+    def __init__(
+        self,
+        *,
+        height: builtins.int | None = ...,
+        width: builtins.int | None = ...,
+        mode: global___RescaleMode.ValueType = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_height", b"_height", "_width", b"_width", "height", b"height", "width", b"width"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_height", b"_height", "_width", b"_width", "height", b"height", "mode", b"mode", "width", b"width"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_height", b"_height"]) -> typing_extensions.Literal["height"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_width", b"_width"]) -> typing_extensions.Literal["width"] | None: ...
+
+global___ImageAdjustment_Autoscale = ImageAdjustment_Autoscale
 
 @typing_extensions.final
 class ImageAdjustment_Crop(google.protobuf.message.Message):
@@ -652,6 +733,173 @@ class ImageAdjustment_Depth(google.protobuf.message.Message):
 global___ImageAdjustment_Depth = ImageAdjustment_Depth
 
 @typing_extensions.final
+class ImageAdjustment_CannyEdge(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    LOW_THRESHOLD_FIELD_NUMBER: builtins.int
+    HIGH_THRESHOLD_FIELD_NUMBER: builtins.int
+    low_threshold: builtins.float
+    high_threshold: builtins.float
+    def __init__(
+        self,
+        *,
+        low_threshold: builtins.float = ...,
+        high_threshold: builtins.float = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["high_threshold", b"high_threshold", "low_threshold", b"low_threshold"]) -> None: ...
+
+global___ImageAdjustment_CannyEdge = ImageAdjustment_CannyEdge
+
+@typing_extensions.final
+class ImageAdjustment_EdgeDetection(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___ImageAdjustment_EdgeDetection = ImageAdjustment_EdgeDetection
+
+@typing_extensions.final
+class ImageAdjustment_Segmentation(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___ImageAdjustment_Segmentation = ImageAdjustment_Segmentation
+
+@typing_extensions.final
+class ImageAdjustment_Keypose(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___ImageAdjustment_Keypose = ImageAdjustment_Keypose
+
+@typing_extensions.final
+class ImageAdjustment_Openpose(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___ImageAdjustment_Openpose = ImageAdjustment_Openpose
+
+@typing_extensions.final
+class ImageAdjustment_Normal(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    BACKGROUND_THRESHOLD_FIELD_NUMBER: builtins.int
+    PREBLUR_FIELD_NUMBER: builtins.int
+    POSTBLUR_FIELD_NUMBER: builtins.int
+    SMOOTHING_FIELD_NUMBER: builtins.int
+    background_threshold: builtins.float
+    """0 .. 1, the higher the more background is removed. -1 == automatic"""
+    preblur: builtins.int
+    """These next three only have any affect when using a depth engine (and then estimating a normal from that)
+    Must be an odd integer if supplied. How much to blur depth map before calculating normal map: Recommended: 0
+    """
+    postblur: builtins.int
+    """Must be an odd integer if supplied. How much to blur normal map. Recommended: 5"""
+    smoothing: builtins.float
+    """Normal range 0..1. The higher the smoother. Recoomened: 0.8"""
+    def __init__(
+        self,
+        *,
+        background_threshold: builtins.float | None = ...,
+        preblur: builtins.int | None = ...,
+        postblur: builtins.int | None = ...,
+        smoothing: builtins.float | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_background_threshold", b"_background_threshold", "_postblur", b"_postblur", "_preblur", b"_preblur", "_smoothing", b"_smoothing", "background_threshold", b"background_threshold", "postblur", b"postblur", "preblur", b"preblur", "smoothing", b"smoothing"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_background_threshold", b"_background_threshold", "_postblur", b"_postblur", "_preblur", b"_preblur", "_smoothing", b"_smoothing", "background_threshold", b"background_threshold", "postblur", b"postblur", "preblur", b"preblur", "smoothing", b"smoothing"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_background_threshold", b"_background_threshold"]) -> typing_extensions.Literal["background_threshold"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_postblur", b"_postblur"]) -> typing_extensions.Literal["postblur"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_preblur", b"_preblur"]) -> typing_extensions.Literal["preblur"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_smoothing", b"_smoothing"]) -> typing_extensions.Literal["smoothing"] | None: ...
+
+global___ImageAdjustment_Normal = ImageAdjustment_Normal
+
+@typing_extensions.final
+class ImageAdjustment_BackgroundRemoval(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    MODE_FIELD_NUMBER: builtins.int
+    REAPPLY_FIELD_NUMBER: builtins.int
+    mode: global___BackgroundRemovalMode.ValueType
+    reapply: builtins.bool
+    """Don't recalculate, reapply the most recently calculated background within this adjustment list"""
+    def __init__(
+        self,
+        *,
+        mode: global___BackgroundRemovalMode.ValueType | None = ...,
+        reapply: builtins.bool = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_mode", b"_mode", "mode", b"mode"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_mode", b"_mode", "mode", b"mode", "reapply", b"reapply"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_mode", b"_mode"]) -> typing_extensions.Literal["mode"] | None: ...
+
+global___ImageAdjustment_BackgroundRemoval = ImageAdjustment_BackgroundRemoval
+
+@typing_extensions.final
+class ImageAdjustment_Palletize(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    COLOURS_FIELD_NUMBER: builtins.int
+    colours: builtins.int
+    """Number of colours in one dimension (so total colours = colours * colours)"""
+    def __init__(
+        self,
+        *,
+        colours: builtins.int | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_colours", b"_colours", "colours", b"colours"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_colours", b"_colours", "colours", b"colours"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_colours", b"_colours"]) -> typing_extensions.Literal["colours"] | None: ...
+
+global___ImageAdjustment_Palletize = ImageAdjustment_Palletize
+
+@typing_extensions.final
+class ImageAdjustment_Quantize(google.protobuf.message.Message):
+    """Quantize the image"""
+
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    THRESHOLD_FIELD_NUMBER: builtins.int
+    @property
+    def threshold(self) -> google.protobuf.internal.containers.RepeatedScalarFieldContainer[builtins.float]:
+        """0..1 linearly divided into len(threshold)+1 points, then numbers rounded to those
+        points based on thresholds
+        """
+    def __init__(
+        self,
+        *,
+        threshold: collections.abc.Iterable[builtins.float] | None = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["threshold", b"threshold"]) -> None: ...
+
+global___ImageAdjustment_Quantize = ImageAdjustment_Quantize
+
+@typing_extensions.final
+class ImageAdjustment_Shuffle(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    def __init__(
+        self,
+    ) -> None: ...
+
+global___ImageAdjustment_Shuffle = ImageAdjustment_Shuffle
+
+@typing_extensions.final
 class ImageAdjustment(google.protobuf.message.Message):
     DESCRIPTOR: google.protobuf.descriptor.Descriptor
 
@@ -662,6 +910,18 @@ class ImageAdjustment(google.protobuf.message.Message):
     RESCALE_FIELD_NUMBER: builtins.int
     CROP_FIELD_NUMBER: builtins.int
     DEPTH_FIELD_NUMBER: builtins.int
+    CANNY_EDGE_FIELD_NUMBER: builtins.int
+    EDGE_DETECTION_FIELD_NUMBER: builtins.int
+    SEGMENTATION_FIELD_NUMBER: builtins.int
+    KEYPOSE_FIELD_NUMBER: builtins.int
+    OPENPOSE_FIELD_NUMBER: builtins.int
+    NORMAL_FIELD_NUMBER: builtins.int
+    BACKGROUND_REMOVAL_FIELD_NUMBER: builtins.int
+    AUTOSCALE_FIELD_NUMBER: builtins.int
+    PALLETIZE_FIELD_NUMBER: builtins.int
+    QUANTIZE_FIELD_NUMBER: builtins.int
+    SHUFFLE_FIELD_NUMBER: builtins.int
+    ENGINE_ID_FIELD_NUMBER: builtins.int
     @property
     def blur(self) -> global___ImageAdjustment_Gaussian: ...
     @property
@@ -676,6 +936,29 @@ class ImageAdjustment(google.protobuf.message.Message):
     def crop(self) -> global___ImageAdjustment_Crop: ...
     @property
     def depth(self) -> global___ImageAdjustment_Depth: ...
+    @property
+    def canny_edge(self) -> global___ImageAdjustment_CannyEdge: ...
+    @property
+    def edge_detection(self) -> global___ImageAdjustment_EdgeDetection: ...
+    @property
+    def segmentation(self) -> global___ImageAdjustment_Segmentation: ...
+    @property
+    def keypose(self) -> global___ImageAdjustment_Keypose: ...
+    @property
+    def openpose(self) -> global___ImageAdjustment_Openpose: ...
+    @property
+    def normal(self) -> global___ImageAdjustment_Normal: ...
+    @property
+    def background_removal(self) -> global___ImageAdjustment_BackgroundRemoval: ...
+    @property
+    def autoscale(self) -> global___ImageAdjustment_Autoscale: ...
+    @property
+    def palletize(self) -> global___ImageAdjustment_Palletize: ...
+    @property
+    def quantize(self) -> global___ImageAdjustment_Quantize: ...
+    @property
+    def shuffle(self) -> global___ImageAdjustment_Shuffle: ...
+    engine_id: builtins.str
     def __init__(
         self,
         *,
@@ -686,10 +969,25 @@ class ImageAdjustment(google.protobuf.message.Message):
         rescale: global___ImageAdjustment_Rescale | None = ...,
         crop: global___ImageAdjustment_Crop | None = ...,
         depth: global___ImageAdjustment_Depth | None = ...,
+        canny_edge: global___ImageAdjustment_CannyEdge | None = ...,
+        edge_detection: global___ImageAdjustment_EdgeDetection | None = ...,
+        segmentation: global___ImageAdjustment_Segmentation | None = ...,
+        keypose: global___ImageAdjustment_Keypose | None = ...,
+        openpose: global___ImageAdjustment_Openpose | None = ...,
+        normal: global___ImageAdjustment_Normal | None = ...,
+        background_removal: global___ImageAdjustment_BackgroundRemoval | None = ...,
+        autoscale: global___ImageAdjustment_Autoscale | None = ...,
+        palletize: global___ImageAdjustment_Palletize | None = ...,
+        quantize: global___ImageAdjustment_Quantize | None = ...,
+        shuffle: global___ImageAdjustment_Shuffle | None = ...,
+        engine_id: builtins.str | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing_extensions.Literal["adjustment", b"adjustment", "blur", b"blur", "channels", b"channels", "crop", b"crop", "depth", b"depth", "invert", b"invert", "levels", b"levels", "rescale", b"rescale"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["adjustment", b"adjustment", "blur", b"blur", "channels", b"channels", "crop", b"crop", "depth", b"depth", "invert", b"invert", "levels", b"levels", "rescale", b"rescale"]) -> None: ...
-    def WhichOneof(self, oneof_group: typing_extensions.Literal["adjustment", b"adjustment"]) -> typing_extensions.Literal["blur", "invert", "levels", "channels", "rescale", "crop", "depth"] | None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_engine_id", b"_engine_id", "adjustment", b"adjustment", "autoscale", b"autoscale", "background_removal", b"background_removal", "blur", b"blur", "canny_edge", b"canny_edge", "channels", b"channels", "crop", b"crop", "depth", b"depth", "edge_detection", b"edge_detection", "engine_id", b"engine_id", "invert", b"invert", "keypose", b"keypose", "levels", b"levels", "normal", b"normal", "openpose", b"openpose", "palletize", b"palletize", "quantize", b"quantize", "rescale", b"rescale", "segmentation", b"segmentation", "shuffle", b"shuffle"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_engine_id", b"_engine_id", "adjustment", b"adjustment", "autoscale", b"autoscale", "background_removal", b"background_removal", "blur", b"blur", "canny_edge", b"canny_edge", "channels", b"channels", "crop", b"crop", "depth", b"depth", "edge_detection", b"edge_detection", "engine_id", b"engine_id", "invert", b"invert", "keypose", b"keypose", "levels", b"levels", "normal", b"normal", "openpose", b"openpose", "palletize", b"palletize", "quantize", b"quantize", "rescale", b"rescale", "segmentation", b"segmentation", "shuffle", b"shuffle"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_engine_id", b"_engine_id"]) -> typing_extensions.Literal["engine_id"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["adjustment", b"adjustment"]) -> typing_extensions.Literal["blur", "invert", "levels", "channels", "rescale", "crop", "depth", "canny_edge", "edge_detection", "segmentation", "keypose", "openpose", "normal", "background_removal", "autoscale", "palletize", "quantize", "shuffle"] | None: ...
 
 global___ImageAdjustment = ImageAdjustment
 
@@ -814,6 +1112,50 @@ class ArtifactReference(google.protobuf.message.Message):
 global___ArtifactReference = ArtifactReference
 
 @typing_extensions.final
+class TokenEmbedding(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    TEXT_FIELD_NUMBER: builtins.int
+    TENSOR_FIELD_NUMBER: builtins.int
+    text: builtins.str
+    @property
+    def tensor(self) -> tensors_pb2.Tensor: ...
+    def __init__(
+        self,
+        *,
+        text: builtins.str = ...,
+        tensor: tensors_pb2.Tensor | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["tensor", b"tensor"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["tensor", b"tensor", "text", b"text"]) -> None: ...
+
+global___TokenEmbedding = TokenEmbedding
+
+@typing_extensions.final
+class CacheControl(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    CACHE_ID_FIELD_NUMBER: builtins.int
+    MAX_AGE_FIELD_NUMBER: builtins.int
+    STAGE_FIELD_NUMBER: builtins.int
+    cache_id: builtins.str
+    """The ID to store it under"""
+    max_age: builtins.int
+    """If > 0, the number of seconds before it self-purges from cache"""
+    stage: global___ArtifactStage.ValueType
+    """Only for artifacts that use adjustments / postAdjustments"""
+    def __init__(
+        self,
+        *,
+        cache_id: builtins.str = ...,
+        max_age: builtins.int = ...,
+        stage: global___ArtifactStage.ValueType = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["cache_id", b"cache_id", "max_age", b"max_age", "stage", b"stage"]) -> None: ...
+
+global___CacheControl = CacheControl
+
+@typing_extensions.final
 class Artifact(google.protobuf.message.Message):
     """A tangible Artifact, such as an image, video, or text that is used for input
     or output.
@@ -830,8 +1172,12 @@ class Artifact(google.protobuf.message.Message):
     TOKENS_FIELD_NUMBER: builtins.int
     CLASSIFIER_FIELD_NUMBER: builtins.int
     TENSOR_FIELD_NUMBER: builtins.int
-    LORA_FIELD_NUMBER: builtins.int
     REF_FIELD_NUMBER: builtins.int
+    URL_FIELD_NUMBER: builtins.int
+    SAFETENSORS_FIELD_NUMBER: builtins.int
+    CACHE_ID_FIELD_NUMBER: builtins.int
+    LORA_FIELD_NUMBER: builtins.int
+    TOKEN_EMBEDDING_FIELD_NUMBER: builtins.int
     INDEX_FIELD_NUMBER: builtins.int
     FINISH_REASON_FIELD_NUMBER: builtins.int
     SEED_FIELD_NUMBER: builtins.int
@@ -839,6 +1185,8 @@ class Artifact(google.protobuf.message.Message):
     SIZE_FIELD_NUMBER: builtins.int
     ADJUSTMENTS_FIELD_NUMBER: builtins.int
     POSTADJUSTMENTS_FIELD_NUMBER: builtins.int
+    HINT_IMAGE_TYPE_FIELD_NUMBER: builtins.int
+    CACHE_CONTROL_FIELD_NUMBER: builtins.int
     id: builtins.int
     type: global___ArtifactType.ValueType
     mime: builtins.str
@@ -858,14 +1206,24 @@ class Artifact(google.protobuf.message.Message):
     def tensor(self) -> tensors_pb2.Tensor:
         """torch.Tensor:"""
     @property
-    def lora(self) -> global___Lora:
+    def ref(self) -> global___ArtifactReference:
         """   RGB tensor (C,H,W)
            VAE latent (C,H//8,W//8, assuming VAE-f8)
-        A Lora embedding
+        A reference to a previous Artifact
         """
+    url: builtins.str
+    """A url (which must be allowed by the server)"""
     @property
-    def ref(self) -> global___ArtifactReference:
-        """A reference to a previous Artifact"""
+    def safetensors(self) -> global___Safetensors:
+        """A safetensors format set of tensors and metadata"""
+    cache_id: builtins.str
+    """An ID to load from cache (previously set with cache_info)"""
+    @property
+    def lora(self) -> global___Lora:
+        """A Lora embedding - deprecated, use safetensors + named_weighs"""
+    @property
+    def token_embedding(self) -> global___TokenEmbedding:
+        """A textual inversion embedding or similar - deprecated, use safetensors + token_overrides"""
     index: builtins.int
     """Index of this artifact in input/output list"""
     finish_reason: global___FinishReason.ValueType
@@ -881,7 +1239,14 @@ class Artifact(google.protobuf.message.Message):
         """Adjustments to this image / mask before generation"""
     @property
     def postAdjustments(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___ImageAdjustment]:
-        """Adjustments to this image / mask after generation"""
+        """Adjustments to this image / mask after generation 
+        (primarily for adjusting mask prior to re-applying image in outpaint)
+        """
+    hint_image_type: builtins.str
+    """Indicate the sort of control for image types"""
+    @property
+    def cache_control(self) -> global___CacheControl:
+        """Examples are "depth", "sketch", "normal", "segmentation_coco", "segmentation_ade20k", "pose_openpose", etc"""
     def __init__(
         self,
         *,
@@ -894,8 +1259,12 @@ class Artifact(google.protobuf.message.Message):
         tokens: global___Tokens | None = ...,
         classifier: global___ClassifierParameters | None = ...,
         tensor: tensors_pb2.Tensor | None = ...,
-        lora: global___Lora | None = ...,
         ref: global___ArtifactReference | None = ...,
+        url: builtins.str = ...,
+        safetensors: global___Safetensors | None = ...,
+        cache_id: builtins.str = ...,
+        lora: global___Lora | None = ...,
+        token_embedding: global___TokenEmbedding | None = ...,
         index: builtins.int = ...,
         finish_reason: global___FinishReason.ValueType = ...,
         seed: builtins.int = ...,
@@ -903,15 +1272,59 @@ class Artifact(google.protobuf.message.Message):
         size: builtins.int = ...,
         adjustments: collections.abc.Iterable[global___ImageAdjustment] | None = ...,
         postAdjustments: collections.abc.Iterable[global___ImageAdjustment] | None = ...,
+        hint_image_type: builtins.str | None = ...,
+        cache_control: global___CacheControl | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing_extensions.Literal["_magic", b"_magic", "binary", b"binary", "classifier", b"classifier", "data", b"data", "lora", b"lora", "magic", b"magic", "ref", b"ref", "tensor", b"tensor", "text", b"text", "tokens", b"tokens"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["_magic", b"_magic", "adjustments", b"adjustments", "binary", b"binary", "classifier", b"classifier", "data", b"data", "finish_reason", b"finish_reason", "id", b"id", "index", b"index", "lora", b"lora", "magic", b"magic", "mime", b"mime", "postAdjustments", b"postAdjustments", "ref", b"ref", "seed", b"seed", "size", b"size", "tensor", b"tensor", "text", b"text", "tokens", b"tokens", "type", b"type", "uuid", b"uuid"]) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_cache_control", b"_cache_control", "_hint_image_type", b"_hint_image_type", "_magic", b"_magic", "binary", b"binary", "cache_control", b"cache_control", "cache_id", b"cache_id", "classifier", b"classifier", "data", b"data", "hint_image_type", b"hint_image_type", "lora", b"lora", "magic", b"magic", "ref", b"ref", "safetensors", b"safetensors", "tensor", b"tensor", "text", b"text", "token_embedding", b"token_embedding", "tokens", b"tokens", "url", b"url"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_cache_control", b"_cache_control", "_hint_image_type", b"_hint_image_type", "_magic", b"_magic", "adjustments", b"adjustments", "binary", b"binary", "cache_control", b"cache_control", "cache_id", b"cache_id", "classifier", b"classifier", "data", b"data", "finish_reason", b"finish_reason", "hint_image_type", b"hint_image_type", "id", b"id", "index", b"index", "lora", b"lora", "magic", b"magic", "mime", b"mime", "postAdjustments", b"postAdjustments", "ref", b"ref", "safetensors", b"safetensors", "seed", b"seed", "size", b"size", "tensor", b"tensor", "text", b"text", "token_embedding", b"token_embedding", "tokens", b"tokens", "type", b"type", "url", b"url", "uuid", b"uuid"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_cache_control", b"_cache_control"]) -> typing_extensions.Literal["cache_control"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_hint_image_type", b"_hint_image_type"]) -> typing_extensions.Literal["hint_image_type"] | None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_magic", b"_magic"]) -> typing_extensions.Literal["magic"] | None: ...
     @typing.overload
-    def WhichOneof(self, oneof_group: typing_extensions.Literal["data", b"data"]) -> typing_extensions.Literal["binary", "text", "tokens", "classifier", "tensor", "lora", "ref"] | None: ...
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["data", b"data"]) -> typing_extensions.Literal["binary", "text", "tokens", "classifier", "tensor", "ref", "url", "safetensors", "cache_id", "lora", "token_embedding"] | None: ...
 
 global___Artifact = Artifact
+
+@typing_extensions.final
+class NamedWeight(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    NAME_FIELD_NUMBER: builtins.int
+    WEIGHT_FIELD_NUMBER: builtins.int
+    name: builtins.str
+    weight: builtins.float
+    def __init__(
+        self,
+        *,
+        name: builtins.str = ...,
+        weight: builtins.float = ...,
+    ) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["name", b"name", "weight", b"weight"]) -> None: ...
+
+global___NamedWeight = NamedWeight
+
+@typing_extensions.final
+class TokenOverride(google.protobuf.message.Message):
+    DESCRIPTOR: google.protobuf.descriptor.Descriptor
+
+    TOKEN_FIELD_NUMBER: builtins.int
+    ORIGINAL_TOKEN_FIELD_NUMBER: builtins.int
+    token: builtins.str
+    original_token: builtins.str
+    def __init__(
+        self,
+        *,
+        token: builtins.str = ...,
+        original_token: builtins.str | None = ...,
+    ) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_original_token", b"_original_token", "original_token", b"original_token"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_original_token", b"_original_token", "original_token", b"original_token", "token", b"token"]) -> None: ...
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_original_token", b"_original_token"]) -> typing_extensions.Literal["original_token"] | None: ...
+
+global___TokenOverride = TokenOverride
 
 @typing_extensions.final
 class PromptParameters(google.protobuf.message.Message):
@@ -921,16 +1334,40 @@ class PromptParameters(google.protobuf.message.Message):
 
     INIT_FIELD_NUMBER: builtins.int
     WEIGHT_FIELD_NUMBER: builtins.int
+    NAMED_WEIGHTS_FIELD_NUMBER: builtins.int
+    TOKEN_OVERRIDES_FIELD_NUMBER: builtins.int
+    CLIP_LAYER_FIELD_NUMBER: builtins.int
+    HINT_PRIORITY_FIELD_NUMBER: builtins.int
     init: builtins.bool
     weight: builtins.float
+    @property
+    def named_weights(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___NamedWeight]:
+        """For Lora / Lycoris, apply weights to different parts of the pipeline. Supported named: unet, text_encoder"""
+    @property
+    def token_overrides(self) -> google.protobuf.internal.containers.RepeatedCompositeFieldContainer[global___TokenOverride]:
+        """Override the token string inside a token_embedding"""
+    clip_layer: builtins.int
+    """Specify the clip layer to use for text prompts and t2i/style hints
+    0 _or_ 1 == final, 2 = penultimate, 3 = next
+    """
+    hint_priority: global___HintPriority.ValueType
+    """Soecify the application mode for hints"""
     def __init__(
         self,
         *,
         init: builtins.bool | None = ...,
         weight: builtins.float | None = ...,
+        named_weights: collections.abc.Iterable[global___NamedWeight] | None = ...,
+        token_overrides: collections.abc.Iterable[global___TokenOverride] | None = ...,
+        clip_layer: builtins.int | None = ...,
+        hint_priority: global___HintPriority.ValueType | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing_extensions.Literal["_init", b"_init", "_weight", b"_weight", "init", b"init", "weight", b"weight"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["_init", b"_init", "_weight", b"_weight", "init", b"init", "weight", b"weight"]) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_clip_layer", b"_clip_layer", "_hint_priority", b"_hint_priority", "_init", b"_init", "_weight", b"_weight", "clip_layer", b"clip_layer", "hint_priority", b"hint_priority", "init", b"init", "weight", b"weight"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_clip_layer", b"_clip_layer", "_hint_priority", b"_hint_priority", "_init", b"_init", "_weight", b"_weight", "clip_layer", b"clip_layer", "hint_priority", b"hint_priority", "init", b"init", "named_weights", b"named_weights", "token_overrides", b"token_overrides", "weight", b"weight"]) -> None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_clip_layer", b"_clip_layer"]) -> typing_extensions.Literal["clip_layer"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_hint_priority", b"_hint_priority"]) -> typing_extensions.Literal["hint_priority"] | None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_init", b"_init"]) -> typing_extensions.Literal["init"] | None: ...
     @typing.overload
@@ -955,6 +1392,7 @@ class Prompt(google.protobuf.message.Message):
     TEXT_FIELD_NUMBER: builtins.int
     TOKENS_FIELD_NUMBER: builtins.int
     ARTIFACT_FIELD_NUMBER: builtins.int
+    ECHO_BACK_FIELD_NUMBER: builtins.int
     @property
     def parameters(self) -> global___PromptParameters: ...
     text: builtins.str
@@ -962,6 +1400,7 @@ class Prompt(google.protobuf.message.Message):
     def tokens(self) -> global___Tokens: ...
     @property
     def artifact(self) -> global___Artifact: ...
+    echo_back: builtins.bool
     def __init__(
         self,
         *,
@@ -969,9 +1408,10 @@ class Prompt(google.protobuf.message.Message):
         text: builtins.str = ...,
         tokens: global___Tokens | None = ...,
         artifact: global___Artifact | None = ...,
+        echo_back: builtins.bool = ...,
     ) -> None: ...
     def HasField(self, field_name: typing_extensions.Literal["_parameters", b"_parameters", "artifact", b"artifact", "parameters", b"parameters", "prompt", b"prompt", "text", b"text", "tokens", b"tokens"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["_parameters", b"_parameters", "artifact", b"artifact", "parameters", b"parameters", "prompt", b"prompt", "text", b"text", "tokens", b"tokens"]) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_parameters", b"_parameters", "artifact", b"artifact", "echo_back", b"echo_back", "parameters", b"parameters", "prompt", b"prompt", "text", b"text", "tokens", b"tokens"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_parameters", b"_parameters"]) -> typing_extensions.Literal["parameters"] | None: ...
     @typing.overload
@@ -1471,6 +1911,8 @@ class ImageParameters(google.protobuf.message.Message):
     EXTENSION_FIELD_NUMBER: builtins.int
     HIRES_FIELD_NUMBER: builtins.int
     TILING_FIELD_NUMBER: builtins.int
+    TILING_X_FIELD_NUMBER: builtins.int
+    TILING_Y_FIELD_NUMBER: builtins.int
     height: builtins.int
     width: builtins.int
     @property
@@ -1492,6 +1934,9 @@ class ImageParameters(google.protobuf.message.Message):
     @property
     def hires(self) -> global___HiresFixParameters: ...
     tiling: builtins.bool
+    tiling_x: builtins.bool
+    """The specific axis override tiling if both set"""
+    tiling_y: builtins.bool
     def __init__(
         self,
         *,
@@ -1508,9 +1953,11 @@ class ImageParameters(google.protobuf.message.Message):
         extension: global___ExtendedParameters | None = ...,
         hires: global___HiresFixParameters | None = ...,
         tiling: builtins.bool | None = ...,
+        tiling_x: builtins.bool | None = ...,
+        tiling_y: builtins.bool | None = ...,
     ) -> None: ...
-    def HasField(self, field_name: typing_extensions.Literal["_extension", b"_extension", "_height", b"_height", "_hires", b"_hires", "_masked_area_init", b"_masked_area_init", "_quantize", b"_quantize", "_samples", b"_samples", "_steps", b"_steps", "_tiling", b"_tiling", "_transform", b"_transform", "_weight_method", b"_weight_method", "_width", b"_width", "extension", b"extension", "height", b"height", "hires", b"hires", "masked_area_init", b"masked_area_init", "quantize", b"quantize", "samples", b"samples", "steps", b"steps", "tiling", b"tiling", "transform", b"transform", "weight_method", b"weight_method", "width", b"width"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["_extension", b"_extension", "_height", b"_height", "_hires", b"_hires", "_masked_area_init", b"_masked_area_init", "_quantize", b"_quantize", "_samples", b"_samples", "_steps", b"_steps", "_tiling", b"_tiling", "_transform", b"_transform", "_weight_method", b"_weight_method", "_width", b"_width", "extension", b"extension", "height", b"height", "hires", b"hires", "masked_area_init", b"masked_area_init", "parameters", b"parameters", "quantize", b"quantize", "samples", b"samples", "seed", b"seed", "steps", b"steps", "tiling", b"tiling", "transform", b"transform", "weight_method", b"weight_method", "width", b"width"]) -> None: ...
+    def HasField(self, field_name: typing_extensions.Literal["_extension", b"_extension", "_height", b"_height", "_hires", b"_hires", "_masked_area_init", b"_masked_area_init", "_quantize", b"_quantize", "_samples", b"_samples", "_steps", b"_steps", "_tiling", b"_tiling", "_tiling_x", b"_tiling_x", "_tiling_y", b"_tiling_y", "_transform", b"_transform", "_weight_method", b"_weight_method", "_width", b"_width", "extension", b"extension", "height", b"height", "hires", b"hires", "masked_area_init", b"masked_area_init", "quantize", b"quantize", "samples", b"samples", "steps", b"steps", "tiling", b"tiling", "tiling_x", b"tiling_x", "tiling_y", b"tiling_y", "transform", b"transform", "weight_method", b"weight_method", "width", b"width"]) -> builtins.bool: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_extension", b"_extension", "_height", b"_height", "_hires", b"_hires", "_masked_area_init", b"_masked_area_init", "_quantize", b"_quantize", "_samples", b"_samples", "_steps", b"_steps", "_tiling", b"_tiling", "_tiling_x", b"_tiling_x", "_tiling_y", b"_tiling_y", "_transform", b"_transform", "_weight_method", b"_weight_method", "_width", b"_width", "extension", b"extension", "height", b"height", "hires", b"hires", "masked_area_init", b"masked_area_init", "parameters", b"parameters", "quantize", b"quantize", "samples", b"samples", "seed", b"seed", "steps", b"steps", "tiling", b"tiling", "tiling_x", b"tiling_x", "tiling_y", b"tiling_y", "transform", b"transform", "weight_method", b"weight_method", "width", b"width"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_extension", b"_extension"]) -> typing_extensions.Literal["extension"] | None: ...
     @typing.overload
@@ -1527,6 +1974,10 @@ class ImageParameters(google.protobuf.message.Message):
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_steps", b"_steps"]) -> typing_extensions.Literal["steps"] | None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_tiling", b"_tiling"]) -> typing_extensions.Literal["tiling"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_tiling_x", b"_tiling_x"]) -> typing_extensions.Literal["tiling_x"] | None: ...
+    @typing.overload
+    def WhichOneof(self, oneof_group: typing_extensions.Literal["_tiling_y", b"_tiling_y"]) -> typing_extensions.Literal["tiling_y"] | None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_transform", b"_transform"]) -> typing_extensions.Literal["transform"] | None: ...
     @typing.overload
@@ -1729,6 +2180,7 @@ class Request(google.protobuf.message.Message):
     CLASSIFIER_FIELD_NUMBER: builtins.int
     ASSET_FIELD_NUMBER: builtins.int
     CONDITIONER_FIELD_NUMBER: builtins.int
+    ACCEPT_FIELD_NUMBER: builtins.int
     engine_id: builtins.str
     request_id: builtins.str
     requested_type: global___ArtifactType.ValueType
@@ -1742,6 +2194,8 @@ class Request(google.protobuf.message.Message):
     def asset(self) -> global___AssetParameters: ...
     @property
     def conditioner(self) -> global___ConditionerParameters: ...
+    accept: builtins.str
+    """The accept header, in the same format as for http requests. Not guaranteed to be obeyed by server."""
     def __init__(
         self,
         *,
@@ -1753,9 +2207,10 @@ class Request(google.protobuf.message.Message):
         classifier: global___ClassifierParameters | None = ...,
         asset: global___AssetParameters | None = ...,
         conditioner: global___ConditionerParameters | None = ...,
+        accept: builtins.str = ...,
     ) -> None: ...
     def HasField(self, field_name: typing_extensions.Literal["_conditioner", b"_conditioner", "asset", b"asset", "classifier", b"classifier", "conditioner", b"conditioner", "image", b"image", "params", b"params"]) -> builtins.bool: ...
-    def ClearField(self, field_name: typing_extensions.Literal["_conditioner", b"_conditioner", "asset", b"asset", "classifier", b"classifier", "conditioner", b"conditioner", "engine_id", b"engine_id", "image", b"image", "params", b"params", "prompt", b"prompt", "request_id", b"request_id", "requested_type", b"requested_type"]) -> None: ...
+    def ClearField(self, field_name: typing_extensions.Literal["_conditioner", b"_conditioner", "accept", b"accept", "asset", b"asset", "classifier", b"classifier", "conditioner", b"conditioner", "engine_id", b"engine_id", "image", b"image", "params", b"params", "prompt", b"prompt", "request_id", b"request_id", "requested_type", b"requested_type"]) -> None: ...
     @typing.overload
     def WhichOneof(self, oneof_group: typing_extensions.Literal["_conditioner", b"_conditioner"]) -> typing_extensions.Literal["conditioner"] | None: ...
     @typing.overload

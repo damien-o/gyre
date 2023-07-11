@@ -1,0 +1,7 @@
+---
+!stable-diffusion-v2-1-vpred-ckpt/reality-engine
+name: "Reality Engine v1.0"
+description: "A realism-focused finetune of the Stability V2.1 768x768 model"
+has_text_encoder: False
+source:
+  model: "https://civitai.com/api/download/models/20414"
